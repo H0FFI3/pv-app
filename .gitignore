@@ -2,5 +2,10 @@
 __pycache__/
 *.py[cod]
 .env
+data/
+dist/
+build/
+*.spec
+dashboard.html
 pv_expected_tmy.csv
 pv_daily_comparison.csv

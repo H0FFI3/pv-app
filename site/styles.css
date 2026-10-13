@@ -86,6 +86,7 @@ h1 { margin-bottom: 7px; font-size: 32px; font-weight: 700; letter-spacing: 0; l
 .chart-unit { padding-top: 2px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .chart-wrap { position: relative; width: 100%; margin-top: 13px; }
 .energy-chart-wrap, .sunshine-chart-wrap { height: 250px; }
+.chart-wrap canvas { display: block; width: 100%; height: 100%; }
 .empty-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 20px; border: 1px dashed #c9d5ce; border-radius: 4px; background: var(--surface-soft); text-align: center; }
 .empty-state[hidden] { display: none; }
 .empty-mark { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 50%; background: var(--green-pale); color: var(--green-deep); font-family: Consolas, "Courier New", monospace; font-size: 10px; }

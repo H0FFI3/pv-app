@@ -1,11 +1,9 @@
-const DATA_URL = `data/daily.json?cache=${Date.now()}`;
 const numberFormat = new Intl.NumberFormat("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const dateFormat = new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+const shortDateFormat = new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "short", timeZone: "UTC" });
 
-let records = [];
+let records = Array.isArray(window.PV_DAILY_DATA?.records) ? window.PV_DAILY_DATA.records : [];
 let activeRange = 30;
-let energyChart;
-let sunshineChart;
 
 const elements = {
   connection: document.querySelector("#connection-state"),
@@ -31,6 +29,10 @@ function formatNumber(value) {
 
 function formatDate(value) {
   return dateFormat.format(new Date(`${value}T12:00:00Z`));
+}
+
+function formatShortDate(value) {
+  return shortDateFormat.format(new Date(`${value}T12:00:00Z`));
 }
 
 function visibleRecords() {
@@ -65,66 +67,74 @@ function renderMetrics() {
   elements.potentialCaption.textContent = `Abstand zum Ist: ${formatNumber(difference)} kWh`;
 }
 
-function chartOptions(unit) {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: { mode: "index", intersect: false },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        backgroundColor: "#172a25",
-        padding: 11,
-        callbacks: { label: (context) => `${context.dataset.label}: ${formatNumber(context.parsed.y)} ${unit}` },
-      },
-    },
-    scales: {
-      x: { grid: { display: false }, ticks: { color: "#687872", maxTicksLimit: 8, maxRotation: 0, font: { size: 10 } }, border: { display: false } },
-      y: { beginAtZero: true, suggestedMax: unit === "h" ? 12 : undefined, grid: { color: "#e8eeea" }, ticks: { color: "#687872", font: { size: 10 } }, border: { display: false } },
-    },
-  };
-}
+function drawChart(canvas, data, valueKey, color, comparisonKey = null) {
+  const bounds = canvas.getBoundingClientRect();
+  if (!bounds.width || !bounds.height || !data.length) return;
 
-function createEnergyChart(data) {
-  if (!window.Chart || !data.length) return;
-  const config = {
-    type: "bar",
-    data: {
-      labels: data.map((item) => formatDate(item.date)),
-      datasets: [
-        { type: "bar", label: "Ist-Ertrag", data: data.map((item) => item.actual_kwh), backgroundColor: "#197459", borderRadius: 3, maxBarThickness: 19, order: 2 },
-        { type: "line", label: "Potenzial", data: data.map((item) => item.potential_kwh), borderColor: "#dc7b52", backgroundColor: "#dc7b52", borderWidth: 2, pointRadius: data.length > 45 ? 0 : 2, pointHoverRadius: 4, tension: 0.22, order: 1 },
-      ],
-    },
-    options: chartOptions("kWh"),
-  };
-  if (energyChart) {
-    energyChart.data = config.data;
-    energyChart.update();
-  } else {
-    energyChart = new Chart(elements.energyCanvas, config);
-  }
-}
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(bounds.width * ratio);
+  canvas.height = Math.round(bounds.height * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
 
-function createSunshineChart(data) {
-  if (!window.Chart || !data.length) return;
-  const config = {
-    type: "bar",
-    data: {
-      labels: data.map((item) => formatDate(item.date)),
-      datasets: [{ label: "Sonnenstunden", data: data.map((item) => item.sunshine_hours), backgroundColor: "#e5ad38", borderRadius: 3, maxBarThickness: 19 }],
-    },
-    options: chartOptions("h"),
-  };
-  config.options.scales.x.ticks.maxTicksLimit = 6;
-  config.options.scales.x.ticks.font.size = 9;
-  config.options.scales.y.ticks.stepSize = 3;
-  if (sunshineChart) {
-    sunshineChart.data = config.data;
-    sunshineChart.update();
-  } else {
-    sunshineChart = new Chart(elements.sunshineCanvas, config);
+  const left = 42;
+  const right = 10;
+  const top = 10;
+  const bottom = 28;
+  const plotWidth = bounds.width - left - right;
+  const plotHeight = bounds.height - top - bottom;
+  const values = data.flatMap((item) => [Number(item[valueKey]), comparisonKey ? Number(item[comparisonKey]) : 0]);
+  const maximum = Math.max(1, ...values.filter(Number.isFinite)) * 1.12;
+  const slotWidth = plotWidth / data.length;
+  const barWidth = Math.max(2, Math.min(18, slotWidth * (comparisonKey ? 0.5 : 0.62)));
+  const yFor = (value) => top + plotHeight - (Math.max(0, Number(value)) / maximum) * plotHeight;
+
+  context.font = "10px Trebuchet MS, sans-serif";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const y = top + (plotHeight * tick) / 4;
+    const value = maximum * (1 - tick / 4);
+    context.strokeStyle = "#e8eeea";
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(bounds.width - right, y);
+    context.stroke();
+    context.fillStyle = "#687872";
+    context.fillText(formatNumber(value), left - 7, y);
   }
+
+  data.forEach((item, index) => {
+    const center = left + slotWidth * (index + 0.5);
+    const value = Number(item[valueKey]);
+    const y = yFor(value);
+    context.fillStyle = color;
+    context.fillRect(center - barWidth / 2, y, barWidth, top + plotHeight - y);
+  });
+
+  if (comparisonKey) {
+    context.strokeStyle = "#dc7b52";
+    context.lineWidth = 2;
+    context.beginPath();
+    data.forEach((item, index) => {
+      const x = left + slotWidth * (index + 0.5);
+      const y = yFor(item[comparisonKey]);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.stroke();
+  }
+
+  const labelStride = Math.max(1, Math.ceil(data.length / 6));
+  context.fillStyle = "#687872";
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  data.forEach((item, index) => {
+    if (index % labelStride !== 0 && index !== data.length - 1) return;
+    const x = left + slotWidth * (index + 0.5);
+    context.fillText(formatShortDate(item.date), x, top + plotHeight + 8);
+  });
 }
 
 function renderHistory(data) {
@@ -157,13 +167,9 @@ function render() {
   setEmptyState(data.length > 0);
   renderMetrics();
   renderHistory(data);
-  createEnergyChart(data);
-  createSunshineChart(data);
+  drawChart(elements.energyCanvas, data, "actual_kwh", "#197459", "potential_kwh");
+  drawChart(elements.sunshineCanvas, data, "sunshine_hours", "#e5ad38");
   elements.exportButton.disabled = records.length === 0;
-  if (!window.Chart && records.length) {
-    elements.connection.dataset.state = "error";
-    elements.connectionLabel.textContent = "Diagrammbibliothek nicht erreichbar";
-  }
 }
 
 function exportCsv() {
@@ -190,25 +196,7 @@ document.querySelectorAll("[data-range]").forEach((button) => {
 });
 elements.exportButton.addEventListener("click", exportCsv);
 
-async function loadDashboard() {
-  try {
-    const response = await fetch(DATA_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Datenabruf fehlgeschlagen (${response.status})`);
-    const payload = await response.json();
-    records = (Array.isArray(payload.records) ? payload.records : [])
-      .filter((item) => item.date && Number.isFinite(Number(item.actual_kwh)))
-      .sort((left, right) => left.date.localeCompare(right.date));
-    elements.connection.dataset.state = records.length ? "ready" : "loading";
-    elements.connectionLabel.textContent = records.length ? "Daten aktuell" : "Wartet auf ersten Tageslauf";
-    render();
-  } catch (error) {
-    elements.connection.dataset.state = "error";
-    elements.connectionLabel.textContent = "Daten nicht erreichbar";
-    elements.energyEmpty.hidden = false;
-    elements.sunshineEmpty.hidden = false;
-    elements.energyEmpty.querySelector("p").textContent = "Daten konnten nicht geladen werden";
-    elements.energyEmpty.querySelector("span:last-child").textContent = error.message;
-  }
-}
-
-loadDashboard();
+elements.connection.dataset.state = records.length ? "ready" : "loading";
+elements.connectionLabel.textContent = records.length ? "Lokal gespeichert" : "Noch keine Tagesdaten";
+render();
+window.addEventListener("resize", render);
