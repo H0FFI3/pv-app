@@ -1,0 +1,5 @@
+pvlib
+alphaessopenapi
+aiohttp
+voluptuous
+python-dotenv
