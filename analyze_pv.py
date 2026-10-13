@@ -8,13 +8,16 @@ LATITUDE = 48.731481319291866
 LONGITUDE = 9.102923245161533
 TIMEZONE = "Europe/Berlin"
 SURFACE_TILT = 35
+MODULE_MODEL = "AxSun AX M-96 GG 2.0 460 Wp"
 MODULE_POWER_WP = 460
+MODULE_EFFICIENCY = 0.23
+MODULE_NMOT_C = 42
 SYSTEM_LOSS_FRACTION = 0.14
-POWER_TEMPERATURE_COEFFICIENT = -0.0035
+POWER_TEMPERATURE_COEFFICIENT = -0.0029
 
 ARRAYS = {
-    "east": {"modules": 6, "azimuth": 90},
-    "west": {"modules": 11, "azimuth": 270},
+    "east": {"modules": 6, "azimuth": 75},
+    "west": {"modules": 11, "azimuth": 285},
 }
 
 
@@ -36,13 +39,12 @@ def estimate_array_power(
         dni_extra=dni_extra,
         model="haydavies",
     )
-    cell_temperature = pvlib.temperature.sapm_cell(
+    cell_temperature = pvlib.temperature.noct_sam(
         irradiance["poa_global"],
         weather["temp_air"],
         weather["wind_speed"],
-        **pvlib.temperature.TEMPERATURE_MODEL_PARAMETERS["sapm"][
-            "open_rack_glass_polymer"
-        ],
+        noct=MODULE_NMOT_C,
+        module_efficiency=MODULE_EFFICIENCY,
     )
     return pvlib.pvsystem.pvwatts_dc(
         effective_irradiance=irradiance["poa_global"] * (1 - SYSTEM_LOSS_FRACTION),
@@ -88,10 +90,11 @@ def main() -> None:
     installed_power_kwp *= MODULE_POWER_WP / 1000
     annual_dc_energy_kwh = expected["total_dc_w"].sum() / 1000
     print(f"Installed DC power: {installed_power_kwp:.2f} kWp")
+    print(f"Module: {MODULE_MODEL} (NMOT {MODULE_NMOT_C} C, Pmax -0.29%/K)")
     print(f"Estimated annual DC energy: {annual_dc_energy_kwh:.0f} kWh")
     print(f"Specific yield: {annual_dc_energy_kwh / installed_power_kwp:.0f} kWh/kWp")
     print(f"Hourly estimate saved to: {output_path}")
-    print("Estimate uses PVGIS typical weather, 14% system losses, and no inverter clipping.")
+    print("Estimate uses PVGIS typical weather and 14% system losses; bifacial rear gain and inverter clipping are excluded.")
 
 
 if __name__ == "__main__":

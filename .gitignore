@@ -3,3 +3,4 @@ __pycache__/
 *.py[cod]
 .env
 pv_expected_tmy.csv
+pv_daily_comparison.csv

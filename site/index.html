@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#eef2ef">
+    <meta name="description" content="Täglicher Überblick über PV-Ertrag, Modellpotenzial und Sonnenscheindauer.">
+    <title>PV-Tagesbericht</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
+    <script src="dashboard.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="PV-Tagesbericht, Startseite">
+        <span class="brand-mark" aria-hidden="true">PV</span>
+        <span class="brand-name">TAGESBERICHT<span class="brand-divider">/</span>01</span>
+      </a>
+      <div class="connection-state" id="connection-state" data-state="loading">
+        <span class="state-dot" aria-hidden="true"></span>
+        <span id="connection-label">Daten werden geladen</span>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">ERTRAG <span aria-hidden="true">/</span> MODELL <span aria-hidden="true">/</span> SONNE</p>
+          <h1 id="page-title">PV-Tagesbericht</h1>
+          <p class="heading-note">Erzeugung, Wetterpotenzial und Sonne im täglichen Vergleich.</p>
+        </div>
+        <div class="updated-block">
+          <span class="updated-label">LETZTER DATENSATZ</span>
+          <time id="latest-date">Noch keine Daten</time>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Kennzahlen des letzten Tages">
+        <article class="metric metric-actual">
+          <div class="metric-heading"><h2>Ist-Ertrag</h2><span class="metric-index">01</span></div>
+          <p class="metric-value"><span id="actual-value">-</span><span class="metric-unit">kWh</span></p>
+          <p class="metric-caption" id="actual-caption">AlphaESS Tageswert</p>
+        </article>
+        <article class="metric metric-potential">
+          <div class="metric-heading"><h2>Potenzial</h2><span class="metric-index">02</span></div>
+          <p class="metric-value"><span id="potential-value">-</span><span class="metric-unit">kWh</span></p>
+          <p class="metric-caption" id="potential-caption">Wetterbasiertes PV-Modell</p>
+        </article>
+        <article class="metric metric-sunshine">
+          <div class="metric-heading"><h2>Sonnenstunden</h2><span class="metric-index">03</span></div>
+          <p class="metric-value"><span id="sunshine-value">-</span><span class="metric-unit">h</span></p>
+          <p class="metric-caption">WMO-Sonnenscheindauer</p>
+        </article>
+      </section>
+
+      <section class="section-heading" aria-label="Zeitraum und Export">
+        <div><p class="eyebrow">VERLAUF</p><h2>Tage im Vergleich</h2></div>
+        <div class="chart-actions">
+          <div class="range-control" role="group" aria-label="Angezeigter Zeitraum">
+            <button type="button" data-range="7" aria-pressed="false">7 T</button>
+            <button type="button" data-range="30" aria-pressed="true">30 T</button>
+            <button type="button" data-range="90" aria-pressed="false">90 T</button>
+            <button type="button" data-range="all" aria-pressed="false">Alle</button>
+          </div>
+          <button class="export-button" id="export-button" type="button" disabled>CSV exportieren</button>
+        </div>
+      </section>
+
+      <section class="charts" aria-label="Tägliche Diagramme">
+        <article class="chart-panel energy-panel">
+          <div class="chart-heading">
+            <div><h3>Erzeugte Energie</h3><p>Gemessener Ertrag gegenüber modelliertem Potenzial</p></div>
+            <div class="chart-unit">kWh / Tag</div>
+          </div>
+          <div class="chart-wrap energy-chart-wrap">
+            <canvas id="energy-chart" aria-label="Täglicher Ist-Ertrag und Potenzial" role="img"></canvas>
+            <div class="empty-state" id="energy-empty" hidden>
+              <span class="empty-mark" aria-hidden="true">01</span>
+              <p>Noch keine Tagesdaten</p>
+              <span>Der erste Datensatz erscheint nach dem nächsten Workflow-Lauf.</span>
+            </div>
+          </div>
+          <div class="legend" aria-label="Diagrammlegende">
+            <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ist-Ertrag</span>
+            <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potenzial</span>
+          </div>
+        </article>
+        <article class="chart-panel sunshine-panel">
+          <div class="chart-heading">
+            <div><h3>Sonnenschein</h3><p>Direkte Strahlung über WMO-Schwelle</p></div>
+            <div class="chart-unit">Stunden / Tag</div>
+          </div>
+          <div class="chart-wrap sunshine-chart-wrap">
+            <canvas id="sunshine-chart" aria-label="Tägliche Sonnenstunden" role="img"></canvas>
+            <div class="empty-state empty-state-compact" id="sunshine-empty" hidden><span>Noch keine Sonnenscheindaten</span></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="history-section" aria-labelledby="history-title">
+        <div class="section-heading history-heading">
+          <div><p class="eyebrow">TAGESWERTE</p><h2 id="history-title">Letzte Einträge</h2></div>
+          <p class="history-count" id="history-count">0 Tage</p>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potenzial</th><th scope="col">Sonne</th></tr></thead>
+            <tbody id="history-body">
+              <tr><td class="table-empty" colspan="4">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="page-footer">
+        <span>Ist-Werte: AlphaESS <span aria-hidden="true">·</span> Wetterdaten: Open-Meteo <span aria-hidden="true">·</span> Potenzial: PVWatts</span>
+        <span>Modellwerte sind Schätzungen, keine Messwerte.</span>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,65 @@
+name: Update PV dashboard
+
+on:
+  schedule:
+    - cron: "25 6 * * *"
+      timezone: Europe/Berlin
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pv-pages
+  cancel-in-progress: false
+
+jobs:
+  update-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      ALPHAESS_APP_ID: ${{ secrets.ALPHAESS_APP_ID }}
+      ALPHAESS_APP_SECRET: ${{ secrets.ALPHAESS_APP_SECRET }}
+      ALPHAESS_SYSTEM_SN: ${{ secrets.ALPHAESS_SYSTEM_SN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Update yesterday's public daily values
+        run: python update_dashboard_data.py
+
+      - name: Save daily history to the private source repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/data/daily.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data: update PV daily history"
+            git push
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
