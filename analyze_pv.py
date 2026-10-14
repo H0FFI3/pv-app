@@ -3,22 +3,21 @@ from pathlib import Path
 import pandas as pd
 import pvlib
 
-
-LATITUDE = 48.731481319291866
-LONGITUDE = 9.102923245161533
-TIMEZONE = "Europe/Berlin"
-SURFACE_TILT = 35
-MODULE_MODEL = "AxSun AX M-96 GG 2.0 460 Wp"
-MODULE_POWER_WP = 460
-MODULE_EFFICIENCY = 0.23
-MODULE_NMOT_C = 42
-SYSTEM_LOSS_FRACTION = 0.14
-POWER_TEMPERATURE_COEFFICIENT = -0.0029
-
-ARRAYS = {
-    "east": {"modules": 6, "azimuth": 75},
-    "west": {"modules": 11, "azimuth": 285},
-}
+from pv_config import (
+    ARRAYS,
+    LATITUDE,
+    LONGITUDE,
+    MODULE_BIFACIAL,
+    MODULE_EFFICIENCY,
+    MODULE_MODEL,
+    MODULE_NMOT_C,
+    MODULE_POWER_WP,
+    POWER_TEMPERATURE_COEFFICIENT,
+    SURFACE_TILT,
+    SYSTEM_LOSS_FRACTION,
+    TIMEZONE,
+    validate_configuration,
+)
 
 
 def estimate_array_power(
@@ -55,6 +54,7 @@ def estimate_array_power(
 
 
 def main() -> None:
+    validate_configuration()
     weather, metadata = pvlib.iotools.get_pvgis_tmy(
         LATITUDE,
         LONGITUDE,
@@ -83,18 +83,25 @@ def main() -> None:
     expected.index = expected.index.tz_convert(TIMEZONE)
     expected.index.name = "timestamp"
 
-    output_path = Path(__file__).with_name("pv_expected_tmy.csv")
-    expected.to_csv(output_path)
+    output_path = Path(__file__).with_name("pv_expected_tmy.json")
+    expected.to_json(output_path, orient="table", date_format="iso", double_precision=3)
 
     installed_power_kwp = sum(array["modules"] for array in ARRAYS.values())
     installed_power_kwp *= MODULE_POWER_WP / 1000
     annual_dc_energy_kwh = expected["total_dc_w"].sum() / 1000
     print(f"Installed DC power: {installed_power_kwp:.2f} kWp")
-    print(f"Module: {MODULE_MODEL} (NMOT {MODULE_NMOT_C} C, Pmax -0.29%/K)")
+    print(
+        f"Module: {MODULE_MODEL} (NMOT {MODULE_NMOT_C:g} C, "
+        f"Pmax {POWER_TEMPERATURE_COEFFICIENT * 100:g}%/K)"
+    )
     print(f"Estimated annual DC energy: {annual_dc_energy_kwh:.0f} kWh")
     print(f"Specific yield: {annual_dc_energy_kwh / installed_power_kwp:.0f} kWh/kWp")
     print(f"Hourly estimate saved to: {output_path}")
-    print("Estimate uses PVGIS typical weather and 14% system losses; bifacial rear gain and inverter clipping are excluded.")
+    rear_gain = "bifacial rear gain" if MODULE_BIFACIAL else "rear-side gain"
+    print(
+        f"Estimate uses PVGIS typical weather and {SYSTEM_LOSS_FRACTION:.0%} "
+        f"system losses; {rear_gain} and inverter clipping are excluded."
+    )
 
 
 if __name__ == "__main__":

@@ -15,10 +15,6 @@ $arguments = @(
     "alphaess"
 )
 
-if (Test-Path ".\data\daily.json") {
-    $arguments += @("--add-data", "data\daily.json;data")
-}
-
 $python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     $python = (Get-Command python).Source

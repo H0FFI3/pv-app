@@ -10,10 +10,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from dotenv import load_dotenv
 
-from analyze_pv import TIMEZONE
-from compare_daily import estimate_daily_potential, load_actual_energy, load_weather
+from pv_config import DATA_START_DATE, TIMEZONE, validate_configuration
+from compare_daily import estimate_hourly_potential, load_actual_energy, load_weather
 
 
 APP_NAME = "PV-Tagesbericht"
@@ -32,14 +31,35 @@ def load_records(path: Path) -> list[dict]:
     valid_records = []
     for record in records:
         try:
-            date.fromisoformat(record["date"])
+            record_date = date.fromisoformat(record["date"])
+            if record_date < DATA_START_DATE:
+                continue
             values = {
                 key: float(record[key])
                 for key in ("actual_kwh", "potential_kwh", "sunshine_hours")
             }
             if not all(math.isfinite(value) for value in values.values()):
                 continue
-            valid_records.append({"date": record["date"], **values})
+            normalized = {"date": record["date"], **values}
+            hourly_profile = []
+            for point in record.get("hourly", []):
+                try:
+                    actual = None if point.get("actual_kwh") is None else float(point["actual_kwh"])
+                    potential = float(point["potential_kwh"])
+                    if not math.isfinite(potential) or (actual is not None and not math.isfinite(actual)):
+                        continue
+                    hourly_profile.append(
+                        {
+                            "hour": str(point["hour"]),
+                            "actual_kwh": actual,
+                            "potential_kwh": potential,
+                        }
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if hourly_profile:
+                normalized["hourly"] = hourly_profile
+            valid_records.append(normalized)
         except (KeyError, TypeError, ValueError):
             continue
     return sorted(valid_records, key=lambda record: record["date"])
@@ -53,23 +73,22 @@ def save_records(records: list[dict], path: Path) -> None:
     )
 
 
-def seed_local_history() -> None:
-    if DATA_PATH.exists():
-        return
-    for seed_path in (
-        RESOURCE_ROOT / "data" / "daily.json",
-        APP_DIRECTORY / "data" / "daily.json",
-    ):
-        if seed_path.exists():
-            save_records(load_records(seed_path), DATA_PATH)
-            return
-
-
-async def collect_yesterday() -> dict:
+async def collect_yesterday() -> dict | None:
     yesterday = datetime.now(ZoneInfo(TIMEZONE)).date() - timedelta(days=1)
-    actual_energy, inverter_power_kw = await load_actual_energy(yesterday, yesterday)
+    if yesterday < DATA_START_DATE:
+        return None
+    validate_configuration()
+    print(f"Datenabruf für {yesterday.isoformat()} wird gestartet.", flush=True)
+    actual_energy, inverter_power_kw, hourly_actual = await load_actual_energy(
+        yesterday,
+        yesterday,
+        include_hourly=True,
+    )
+    print("Wetter: rufe historische Strahlungs- und Sonnenscheindaten ab ...", flush=True)
     weather, elevation, sunshine_hours = load_weather(yesterday, yesterday)
-    potential = estimate_daily_potential(weather, elevation, inverter_power_kw)
+    print("Modell: berechne das wetterbasierte PV-Potenzial ...", flush=True)
+    hourly_potential = estimate_hourly_potential(weather, elevation, inverter_power_kw)
+    potential = hourly_potential.resample("D").sum(min_count=1)
 
     day_key = pd.Timestamp(yesterday).tz_localize(TIMEZONE)
     if day_key not in potential.index:
@@ -77,12 +96,25 @@ async def collect_yesterday() -> dict:
     if yesterday not in sunshine_hours:
         raise RuntimeError(f"Für {yesterday.isoformat()} fehlen Sonnenscheindaten.")
 
-    return {
+    day_potential = hourly_potential[hourly_potential.index.date == yesterday]
+    hourly_measurements = hourly_actual.get(yesterday, {})
+    hourly_profile = [
+        {
+            "hour": timestamp.strftime("%H:00"),
+            "actual_kwh": hourly_measurements.get(timestamp.strftime("%H:00")),
+            "potential_kwh": round(float(hourly_kwh), 3),
+        }
+        for timestamp, hourly_kwh in day_potential.items()
+    ]
+    record = {
         "date": yesterday.isoformat(),
         "actual_kwh": round(actual_energy[yesterday], 2),
         "potential_kwh": round(float(potential.loc[day_key]), 2),
         "sunshine_hours": round(sunshine_hours[yesterday], 2),
+        "hourly": hourly_profile,
     }
+    print("Datenabruf und Berechnung abgeschlossen.", flush=True)
+    return record
 
 
 def upsert_record(records: list[dict], record: dict) -> list[dict]:
@@ -117,43 +149,48 @@ def create_standalone_report(records: list[dict]) -> Path:
     return REPORT_PATH
 
 
-def credentials_path() -> Path:
-    executable_env = APP_DIRECTORY / ".env"
-    source_env = Path(__file__).resolve().parent / ".env"
-    if getattr(sys, "frozen", False):
-        return executable_env
-    return source_env
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Erfasst PV-Tageswerte und öffnet den lokalen HTML-Bericht.")
     parser.add_argument("--offline", action="store_true", help="Nur vorhandene lokale Daten anzeigen.")
     parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args()
 
-    load_dotenv(credentials_path(), override=False)
-    seed_local_history()
+    print("PV-Tagesbericht wird gestartet.", flush=True)
+    credentials_loaded = bool(os.getenv("ALPHAESS_APP_ID") and os.getenv("ALPHAESS_APP_SECRET"))
+    if credentials_loaded:
+        print("AlphaESS-Zugangsdaten gefunden; Werte werden nicht angezeigt.", flush=True)
+    else:
+        print("AlphaESS-Zugangsdaten fehlen oder sind unvollständig.", flush=True)
     records = load_records(DATA_PATH)
+    save_records(records, DATA_PATH)
+    print(f"{len(records)} lokale Tagesdatensätze geladen.", flush=True)
 
     if not options.offline:
         try:
             record = asyncio.run(collect_yesterday())
-            records = upsert_record(records, record)
-            save_records(records, DATA_PATH)
-            print(
-                f"Erfasst: {record['date']} | Ist {record['actual_kwh']:.2f} kWh | "
-                f"Potenzial {record['potential_kwh']:.2f} kWh | "
-                f"Sonne {record['sunshine_hours']:.2f} h"
-            )
+            if record is None:
+                print(f"Die Erfassung beginnt am {DATA_START_DATE.isoformat()}.")
+                print("Der erste vollständige Tagesdatensatz ist am 14.10. verfügbar.")
+            else:
+                records = upsert_record(records, record)
+                save_records(records, DATA_PATH)
+                print(
+                    f"Erfasst: {record['date']} | Ist {record['actual_kwh']:.2f} kWh | "
+                    f"Potenzial {record['potential_kwh']:.2f} kWh | "
+                    f"Sonne {record['sunshine_hours']:.2f} h"
+                )
         except Exception as error:
-            print(f"Aktualisierung nicht möglich: {error}")
-            print("Der Bericht wird mit den zuletzt lokal gespeicherten Daten geöffnet.")
+            print(f"Aktualisierung fehlgeschlagen: {error}", flush=True)
+            print("Der Bericht wird mit den zuletzt lokal gespeicherten Daten geöffnet.", flush=True)
 
+    print("Erzeuge eigenständigen HTML-Bericht ...", flush=True)
     report = create_standalone_report(records)
-    print(f"HTML-Bericht: {report}")
-    print(f"Lokale Daten: {DATA_PATH}")
+    print(f"HTML-Bericht erstellt: {report}", flush=True)
+    print(f"Lokale Daten: {DATA_PATH}", flush=True)
     if not options.no_open:
-        webbrowser.open(report.resolve().as_uri())
+        print("Öffne Bericht im Standardbrowser ...", flush=True)
+        if not webbrowser.open(report.resolve().as_uri()):
+            print(f"Browser konnte nicht gestartet werden. Datei manuell öffnen: {report}", flush=True)
     if sys.stdin.isatty() and not options.no_open:
         input("Eingabetaste zum Schließen drücken ...")
 

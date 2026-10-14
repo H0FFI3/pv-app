@@ -16,6 +16,10 @@ const elements = {
   sunshineValue: document.querySelector("#sunshine-value"),
   energyCanvas: document.querySelector("#energy-chart"),
   sunshineCanvas: document.querySelector("#sunshine-chart"),
+  hourlyCanvas: document.querySelector("#hourly-chart"),
+  hourlyTooltip: document.querySelector("#hourly-tooltip"),
+  hourlyEmpty: document.querySelector("#hourly-empty"),
+  hourlySelect: document.querySelector("#hourly-date"),
   energyEmpty: document.querySelector("#energy-empty"),
   sunshineEmpty: document.querySelector("#sunshine-empty"),
   historyBody: document.querySelector("#history-body"),
@@ -24,6 +28,7 @@ const elements = {
 };
 
 function formatNumber(value) {
+  if (value === null || value === undefined || value === "") return "-";
   return Number.isFinite(Number(value)) ? numberFormat.format(Number(value)) : "-";
 }
 
@@ -33,6 +38,41 @@ function formatDate(value) {
 
 function formatShortDate(value) {
   return shortDateFormat.format(new Date(`${value}T12:00:00Z`));
+}
+
+function bindChartHover(canvas, tooltipId) {
+  if (canvas.dataset.hoverBound) return;
+  canvas.dataset.hoverBound = "true";
+  const tooltip = document.getElementById(tooltipId);
+  const hideTooltip = () => { tooltip.hidden = true; };
+
+  canvas.addEventListener("pointermove", (event) => {
+    const chart = canvas.pvChart;
+    if (!chart?.data.length) return hideTooltip();
+    const bounds = canvas.getBoundingClientRect();
+    const x = event.clientX - bounds.left;
+    if (x < chart.left || x > bounds.width - chart.right) return hideTooltip();
+
+    const slotWidth = (bounds.width - chart.left - chart.right) / chart.data.length;
+    const index = Math.min(chart.data.length - 1, Math.floor((x - chart.left) / slotWidth));
+    const item = chart.data[index];
+    const lines = [chart.title ? chart.title(item) : formatDate(item.date)];
+    lines.push(`${chart.label}: ${formatNumber(item[chart.valueKey])} ${chart.unit}`);
+    if (chart.comparisonKey) {
+      lines.push(`${chart.comparisonLabel}: ${formatNumber(item[chart.comparisonKey])} ${chart.unit}`);
+    }
+    tooltip.textContent = lines.join("\n");
+    tooltip.hidden = false;
+
+    const center = chart.left + slotWidth * (index + 0.5);
+    const halfTooltip = tooltip.offsetWidth / 2;
+    const left = Math.max(halfTooltip + 6, Math.min(bounds.width - halfTooltip - 6, center));
+    const y = Math.max(tooltip.offsetHeight + 8, event.clientY - bounds.top - 10);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${y}px`;
+  });
+  canvas.addEventListener("pointerleave", hideTooltip);
+  canvas.addEventListener("blur", hideTooltip);
 }
 
 function visibleRecords() {
@@ -67,7 +107,7 @@ function renderMetrics() {
   elements.potentialCaption.textContent = `Abstand zum Ist: ${formatNumber(difference)} kWh`;
 }
 
-function drawChart(canvas, data, valueKey, color, comparisonKey = null) {
+function drawChart(canvas, data, valueKey, color, comparisonKey = null, options = {}) {
   const bounds = canvas.getBoundingClientRect();
   if (!bounds.width || !bounds.height || !data.length) return;
 
@@ -84,6 +124,19 @@ function drawChart(canvas, data, valueKey, color, comparisonKey = null) {
   const bottom = 28;
   const plotWidth = bounds.width - left - right;
   const plotHeight = bounds.height - top - bottom;
+  canvas.pvChart = {
+    data,
+    valueKey,
+    comparisonKey,
+    label: valueKey === "sunshine_hours" ? "Sonne" : "Ist-Ertrag",
+    unit: options.hourly ? "kWh" : valueKey === "sunshine_hours" ? "h" : "kWh",
+    comparisonLabel: options.comparisonLabel || "Potentieller Ertrag",
+    title: options.hourly ? (item) => `${formatDate(options.day)} · ${item.hour}` : (item) => formatDate(item.date),
+    xLabel: options.hourly ? (item) => item.hour.slice(0, 2) : (item) => formatShortDate(item.date),
+    left,
+    right,
+  };
+  bindChartHover(canvas, canvas.id === "energy-chart" ? "energy-tooltip" : "sunshine-tooltip");
   const values = data.flatMap((item) => [Number(item[valueKey]), comparisonKey ? Number(item[comparisonKey]) : 0]);
   const maximum = Math.max(1, ...values.filter(Number.isFinite)) * 1.12;
   const slotWidth = plotWidth / data.length;
@@ -107,6 +160,7 @@ function drawChart(canvas, data, valueKey, color, comparisonKey = null) {
 
   data.forEach((item, index) => {
     const center = left + slotWidth * (index + 0.5);
+    if (item[valueKey] === null || item[valueKey] === undefined) return;
     const value = Number(item[valueKey]);
     const y = yFor(value);
     context.fillStyle = color;
@@ -133,8 +187,41 @@ function drawChart(canvas, data, valueKey, color, comparisonKey = null) {
   data.forEach((item, index) => {
     if (index % labelStride !== 0 && index !== data.length - 1) return;
     const x = left + slotWidth * (index + 0.5);
-    context.fillText(formatShortDate(item.date), x, top + plotHeight + 8);
+    context.fillText(options.hourly ? item.hour.slice(0, 2) : formatShortDate(item.date), x, top + plotHeight + 8);
   });
+}
+
+function renderHourlyChart() {
+  const availableDays = records.filter((record) => Array.isArray(record.hourly) && record.hourly.length > 0);
+  const previousSelection = elements.hourlySelect.value;
+  elements.hourlySelect.replaceChildren();
+  if (!availableDays.length) {
+    elements.hourlySelect.disabled = true;
+    elements.hourlyCanvas.hidden = true;
+    elements.hourlyTooltip.hidden = true;
+    elements.hourlyEmpty.hidden = false;
+    return;
+  }
+
+  for (const record of availableDays) {
+    const option = document.createElement("option");
+    option.value = record.date;
+    option.textContent = formatDate(record.date);
+    elements.hourlySelect.append(option);
+  }
+  const selectedDay = availableDays.find((record) => record.date === previousSelection) || availableDays.at(-1);
+  elements.hourlySelect.value = selectedDay.date;
+  elements.hourlySelect.disabled = false;
+  elements.hourlyCanvas.hidden = false;
+  elements.hourlyEmpty.hidden = true;
+  drawChart(
+    elements.hourlyCanvas,
+    selectedDay.hourly,
+    "actual_kwh",
+    "#197459",
+    "potential_kwh",
+    { hourly: true, day: selectedDay.date, comparisonLabel: "Potentieller Ertrag" },
+  );
 }
 
 function renderHistory(data) {
@@ -169,6 +256,7 @@ function render() {
   renderHistory(data);
   drawChart(elements.energyCanvas, data, "actual_kwh", "#197459", "potential_kwh");
   drawChart(elements.sunshineCanvas, data, "sunshine_hours", "#e5ad38");
+  renderHourlyChart();
   elements.exportButton.disabled = records.length === 0;
 }
 
@@ -195,6 +283,7 @@ document.querySelectorAll("[data-range]").forEach((button) => {
   });
 });
 elements.exportButton.addEventListener("click", exportCsv);
+elements.hourlySelect.addEventListener("change", renderHourlyChart);
 
 elements.connection.dataset.state = records.length ? "ready" : "loading";
 elements.connectionLabel.textContent = records.length ? "Lokal gespeichert" : "Noch keine Tagesdaten";

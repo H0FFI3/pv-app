@@ -41,7 +41,7 @@
           <p class="metric-caption" id="actual-caption">AlphaESS Tageswert</p>
         </article>
         <article class="metric metric-potential">
-          <div class="metric-heading"><h2>Potenzial</h2><span class="metric-index">02</span></div>
+          <div class="metric-heading"><h2>Potentieller Ertrag</h2><span class="metric-index">02</span></div>
           <p class="metric-value"><span id="potential-value">-</span><span class="metric-unit">kWh</span></p>
           <p class="metric-caption" id="potential-caption">Wetterbasiertes PV-Modell</p>
         </article>
@@ -68,20 +68,21 @@
       <section class="charts" aria-label="Tägliche Diagramme">
         <article class="chart-panel energy-panel">
           <div class="chart-heading">
-            <div><h3>Erzeugte Energie</h3><p>Gemessener Ertrag gegenüber modelliertem Potenzial</p></div>
+            <div><h3>Erzeugte Energie</h3><p>Gemessener Ertrag gegenüber potentieller Erzeugung</p></div>
             <div class="chart-unit">kWh / Tag</div>
           </div>
           <div class="chart-wrap energy-chart-wrap">
-            <canvas id="energy-chart" aria-label="Täglicher Ist-Ertrag und Potenzial" role="img"></canvas>
+            <canvas id="energy-chart" aria-label="Täglicher Ist-Ertrag und potentieller Ertrag. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="energy-tooltip"></canvas>
+            <div class="chart-tooltip" id="energy-tooltip" role="tooltip" hidden></div>
             <div class="empty-state" id="energy-empty" hidden>
               <span class="empty-mark" aria-hidden="true">01</span>
               <p>Noch keine Tagesdaten</p>
-              <span>Der erste Datensatz erscheint nach dem nächsten Workflow-Lauf.</span>
+              <span>Der erste Datensatz erscheint nach dem ersten vollständigen Erfassungstag.</span>
             </div>
           </div>
           <div class="legend" aria-label="Diagrammlegende">
             <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ist-Ertrag</span>
-            <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potenzial</span>
+            <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potentieller Ertrag</span>
           </div>
         </article>
         <article class="chart-panel sunshine-panel">
@@ -90,8 +91,35 @@
             <div class="chart-unit">Stunden / Tag</div>
           </div>
           <div class="chart-wrap sunshine-chart-wrap">
-            <canvas id="sunshine-chart" aria-label="Tägliche Sonnenstunden" role="img"></canvas>
+            <canvas id="sunshine-chart" aria-label="Tägliche Sonnenstunden. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="sunshine-tooltip"></canvas>
+            <div class="chart-tooltip" id="sunshine-tooltip" role="tooltip" hidden></div>
             <div class="empty-state empty-state-compact" id="sunshine-empty" hidden><span>Noch keine Sonnenscheindaten</span></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="hourly-section" aria-labelledby="hourly-title">
+        <div class="section-heading hourly-heading">
+          <div><p class="eyebrow">TAGESPROFIL</p><h2 id="hourly-title">Stundenverlauf</h2></div>
+          <label class="hourly-date-label" for="hourly-date">Tag
+            <select id="hourly-date" disabled aria-label="Tag für Stundenverlauf"></select>
+          </label>
+        </div>
+        <article class="chart-panel hourly-panel">
+          <div class="chart-heading">
+            <div><h3>PV-Ertrag je Stunde</h3><p>AlphaESS-Leistungsmessung gegenüber Wettermodell</p></div>
+            <div class="chart-unit">kWh / Stunde</div>
+          </div>
+          <div class="chart-wrap hourly-chart-wrap">
+            <canvas id="hourly-chart" aria-label="Stündlicher Ist-Ertrag und potentieller Ertrag" role="img" tabindex="0" aria-describedby="hourly-tooltip" hidden></canvas>
+            <div class="chart-tooltip" id="hourly-tooltip" role="tooltip" hidden></div>
+            <div class="empty-state empty-state-compact" id="hourly-empty">
+              <span>Stundenprofile erscheinen ab dem nächsten Erfassungslauf.</span>
+            </div>
+          </div>
+          <div class="legend" aria-label="Stundenchart-Legende">
+            <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ist-Ertrag</span>
+            <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potentieller Ertrag</span>
           </div>
         </article>
       </section>
@@ -103,7 +131,7 @@
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potenzial</th><th scope="col">Sonne</th></tr></thead>
+            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Sonne</th></tr></thead>
             <tbody id="history-body">
               <tr><td class="table-empty" colspan="4">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
             </tbody>

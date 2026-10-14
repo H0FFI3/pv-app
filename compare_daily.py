@@ -11,15 +11,21 @@ import pandas as pd
 import pvlib
 import requests
 from alphaess.alphaess import alphaess
-from dotenv import load_dotenv
 
-from analyze_pv import ARRAYS, LATITUDE, LONGITUDE, TIMEZONE, estimate_array_power
+from analyze_pv import estimate_array_power
+from pv_config import (
+    API_REQUEST_INTERVAL_SECONDS,
+    ARRAYS,
+    LATITUDE,
+    LONGITUDE,
+    NOMINAL_INVERTER_EFFICIENCY,
+    TIMEZONE,
+    validate_configuration,
+)
 
 
-API_REQUEST_INTERVAL_SECONDS = 10
-NOMINAL_INVERTER_EFFICIENCY = 0.96
 WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
-OUTPUT_PATH = Path(__file__).with_name("pv_daily_comparison.csv")
+OUTPUT_PATH = Path(__file__).with_name("pv_daily_comparison.json")
 
 
 def parse_date(value: str) -> date:
@@ -30,6 +36,7 @@ def parse_date(value: str) -> date:
 
 
 def arguments() -> argparse.Namespace:
+    validate_configuration()
     parser = argparse.ArgumentParser(
         description="Vergleicht AlphaESS-Tagesertrag mit wetterbasiertem PV-Potenzial."
     )
@@ -91,7 +98,57 @@ def load_weather(
     return weather, float(payload.get("elevation") or 0), sunshine_hours
 
 
-def estimate_daily_potential(
+def aggregate_hourly_pv_power(
+    samples: list[dict],
+    day: date,
+    daily_energy_kwh: float,
+) -> dict[str, float]:
+    frame = pd.DataFrame(
+        {
+            "upload_time": [sample.get("uploadTime") for sample in samples],
+            "power_w": [sample.get("ppv") for sample in samples],
+        }
+    )
+    if frame.empty:
+        return {}
+
+    frame["upload_time"] = pd.to_datetime(frame["upload_time"], errors="coerce")
+    frame["power_w"] = pd.to_numeric(frame["power_w"], errors="coerce")
+    frame = frame.dropna(subset=["upload_time", "power_w"])
+    if frame.empty:
+        return {}
+
+    timestamps = pd.DatetimeIndex(frame["upload_time"])
+    if timestamps.tz is None:
+        timestamps = timestamps.tz_localize(TIMEZONE, ambiguous="NaT", nonexistent="shift_forward")
+    else:
+        timestamps = timestamps.tz_convert(TIMEZONE)
+    frame.index = timestamps
+    frame = frame[~frame.index.isna()].sort_index()
+    frame = frame[~frame.index.duplicated(keep="last")]
+    frame = frame[frame.index.date == day]
+    if len(frame) < 2:
+        return {}
+
+    local_times = pd.Series(frame.index.tz_localize(None), index=frame.index)
+    intervals = (local_times.shift(-1) - local_times).dt.total_seconds()
+    normal_intervals = intervals[(intervals > 0) & (intervals <= 600)]
+    typical_interval = float(normal_intervals.median()) if not normal_intervals.empty else 300.0
+    intervals = intervals.fillna(typical_interval).clip(lower=0, upper=600)
+    frame["sample_energy_kwh"] = frame["power_w"].clip(lower=0) * intervals / 3_600_000
+
+    hour_labels = frame.index.tz_localize(None).floor("h")
+    hourly_energy = frame.groupby(hour_labels)["sample_energy_kwh"].sum()
+    measured_total = float(hourly_energy.sum())
+    if measured_total > 0:
+        hourly_energy *= max(0.0, daily_energy_kwh) / measured_total
+    return {
+        timestamp.strftime("%H:00"): round(float(energy), 3)
+        for timestamp, energy in hourly_energy.items()
+    }
+
+
+def estimate_hourly_potential(
     weather: pd.DataFrame,
     elevation: float,
     inverter_power_kw: float,
@@ -120,7 +177,16 @@ def estimate_daily_potential(
         pdc0=inverter_power_kw * 1000 / NOMINAL_INVERTER_EFFICIENCY,
         eta_inv_nom=NOMINAL_INVERTER_EFFICIENCY,
     ).clip(lower=0)
-    return ac_power.resample("D").sum() / 1000
+    return ac_power.resample("h").sum(min_count=1) / 1000
+
+
+def estimate_daily_potential(
+    weather: pd.DataFrame,
+    elevation: float,
+    inverter_power_kw: float,
+) -> pd.Series:
+    hourly_potential = estimate_hourly_potential(weather, elevation, inverter_power_kw)
+    return hourly_potential.resample("D").sum(min_count=1)
 
 
 def choose_system(systems: list[dict]) -> dict:
@@ -159,7 +225,8 @@ def choose_system(systems: list[dict]) -> dict:
 async def load_actual_energy(
     start: date,
     end: date,
-) -> tuple[dict[date, float], float]:
+    include_hourly: bool = False,
+) -> tuple[dict[date, float], float, dict[date, dict[str, float]]]:
     app_id = os.getenv("ALPHAESS_APP_ID")
     app_secret = os.getenv("ALPHAESS_APP_SECRET")
     if sys.stdin.isatty():
@@ -168,9 +235,11 @@ async def load_actual_energy(
     if not app_id or not app_secret:
         raise RuntimeError("ALPHAESS_APP_ID und ALPHAESS_APP_SECRET müssen gesetzt sein.")
 
+    print("AlphaESS: Zugangsdaten vorhanden; melde mich an und rufe die Anlagenliste ab ...", flush=True)
     client = alphaess(app_id, app_secret, raise_on_error=True)
     try:
         systems = await client.getESSList()
+        print(f"AlphaESS: Anlagenliste erhalten ({len(systems or [])} Anlage(n)).", flush=True)
         last_request = time.monotonic()
         system = choose_system(systems or [])
         serial = system.get("sysSn")
@@ -181,28 +250,49 @@ async def load_actual_energy(
             raise RuntimeError("AlphaESS hat keine gültige Wechselrichterleistung (poinv) geliefert.")
 
         actual_energy = {}
+        hourly_actual = {}
         total_days = (end - start).days + 1
         for day_offset in range(total_days):
             day = start + timedelta(days=day_offset)
             wait_seconds = API_REQUEST_INTERVAL_SECONDS - (time.monotonic() - last_request)
             if wait_seconds > 0:
+                print(f"AlphaESS: API-Schutzpause {wait_seconds:.0f} s ...", flush=True)
                 await asyncio.sleep(wait_seconds)
+            print(f"AlphaESS: rufe Tagesertrag für {day.isoformat()} ab ...", flush=True)
             result = await client.getOneDateEnergyBySn(serial, day.isoformat())
             last_request = time.monotonic()
             if not result or result.get("epv") is None:
                 raise RuntimeError(f"AlphaESS lieferte für {day.isoformat()} kein Feld epv.")
             actual_energy[day] = float(result["epv"])
-            print(f"Istwert abgerufen: {day.isoformat()} ({day_offset + 1}/{total_days})")
+            if include_hourly:
+                wait_seconds = API_REQUEST_INTERVAL_SECONDS - (time.monotonic() - last_request)
+                if wait_seconds > 0:
+                    print(f"AlphaESS: API-Schutzpause {wait_seconds:.0f} s vor Stundenwerten ...", flush=True)
+                    await asyncio.sleep(wait_seconds)
+                print(f"AlphaESS: rufe 5-Minuten-Leistungswerte für {day.isoformat()} ab ...", flush=True)
+                try:
+                    samples = await client.getOneDayPowerBySn(serial, day.isoformat()) or []
+                    hourly_actual[day] = aggregate_hourly_pv_power(
+                        samples,
+                        day,
+                        actual_energy[day],
+                    )
+                    print(f"AlphaESS: {len(samples)} Leistungsproben erhalten.", flush=True)
+                except Exception as error:
+                    print(f"AlphaESS: Stundenwerte nicht verfügbar ({error}).", flush=True)
+                    hourly_actual[day] = {}
+                last_request = time.monotonic()
+            print(f"Istwert abgerufen: {day.isoformat()} ({day_offset + 1}/{total_days})", flush=True)
 
-        return actual_energy, inverter_power_kw
+        return actual_energy, inverter_power_kw, hourly_actual
     finally:
         await client.close()
 
 
 async def main() -> None:
-    load_dotenv(Path(__file__).with_name(".env"))
     options = arguments()
-    actual_energy, inverter_power_kw = await load_actual_energy(options.start, options.end)
+    validate_configuration()
+    actual_energy, inverter_power_kw, _ = await load_actual_energy(options.start, options.end)
     weather, elevation, sunshine_hours = load_weather(options.start, options.end)
     potential = estimate_daily_potential(weather, elevation, inverter_power_kw)
 
@@ -228,7 +318,13 @@ async def main() -> None:
         )
 
     comparison = pd.DataFrame(rows)
-    comparison.to_csv(OUTPUT_PATH, index=False, float_format="%.2f")
+    comparison.to_json(
+        OUTPUT_PATH,
+        orient="records",
+        date_format="iso",
+        double_precision=2,
+        force_ascii=False,
+    )
     print(comparison.to_string(index=False, float_format=lambda value: f"{value:.2f}"))
     print(f"Vergleich gespeichert: {OUTPUT_PATH}")
     print(
