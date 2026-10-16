@@ -1,9 +1,11 @@
-import asyncio
 import argparse
+import asyncio
 import json
 import math
 import os
+import shutil
 import sys
+import tempfile
 import webbrowser
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,11 +25,47 @@ DATA_PATH = APP_DATA_DIRECTORY / "daily.json"
 REPORT_PATH = APP_DIRECTORY / "dashboard.html"
 
 
-def load_records(path: Path) -> list[dict]:
+def _read_raw_records(path: Path) -> list[dict]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
+        raise ValueError("Das Datenformat enthält keine Datensatzliste.")
+    return payload["records"]
+
+
+def load_raw_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    records = payload.get("records", [])
+    try:
+        return _read_raw_records(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        corrupt_path = path.with_name(f"{path.name}.corrupt-{timestamp}")
+        suffix = 1
+        while corrupt_path.exists():
+            corrupt_path = path.with_name(f"{path.name}.corrupt-{timestamp}-{suffix}")
+            suffix += 1
+        try:
+            os.replace(path, corrupt_path)
+            print(
+                f"Warnung: {path.name} ist beschädigt und wurde als "
+                f"{corrupt_path.name} gesichert.",
+                flush=True,
+            )
+        except OSError as error:
+            print(f"Warnung: {path.name} konnte nicht umbenannt werden: {error}", flush=True)
+
+    backup_path = path.with_name(f"{path.name}.bak")
+    if backup_path.exists():
+        try:
+            records = _read_raw_records(backup_path)
+            print(f"Warnung: Daten werden aus {backup_path.name} wiederhergestellt.", flush=True)
+            return records
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            print(f"Warnung: Auch {backup_path.name} ist beschädigt.", flush=True)
+    return []
+
+
+def _normalize_records(records: list[dict]) -> list[dict]:
     valid_records = []
     for record in records:
         try:
@@ -65,12 +103,47 @@ def load_records(path: Path) -> list[dict]:
     return sorted(valid_records, key=lambda record: record["date"])
 
 
+def load_records(path: Path) -> list[dict]:
+    return _normalize_records(load_raw_records(path))
+
+
 def save_records(records: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"records": records}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump({"records": records}, temporary_file, ensure_ascii=False, indent=2)
+            temporary_file.write("\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        if path.exists():
+            shutil.copy2(path, path.with_name(f"{path.name}.bak"))
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _merge_record(records: list[dict], updated_record: dict) -> list[dict]:
+    merged = list(records)
+    updated_date = updated_record["date"]
+    for index, existing in enumerate(merged):
+        if not isinstance(existing, dict) or existing.get("date") != updated_date:
+            continue
+        if _normalize_records([existing]):
+            merged[index] = updated_record
+            return merged
+    merged.append(updated_record)
+    return merged
 
 
 async def collect_yesterday() -> dict | None:
@@ -131,7 +204,6 @@ def create_standalone_report(records: list[dict]) -> Path:
     styles = style_path.read_text(encoding="utf-8")
     script = script_path.read_text(encoding="utf-8")
     data = json.dumps({"records": records}, ensure_ascii=True, separators=(",", ":"))
-
     html = html.replace(
         '<link rel="stylesheet" href="styles.css">',
         f"<style>\n{styles}\n</style>",
@@ -161,8 +233,8 @@ def main() -> None:
         print("AlphaESS-Zugangsdaten gefunden; Werte werden nicht angezeigt.", flush=True)
     else:
         print("AlphaESS-Zugangsdaten fehlen oder sind unvollständig.", flush=True)
-    records = load_records(DATA_PATH)
-    save_records(records, DATA_PATH)
+    raw_records = load_raw_records(DATA_PATH)
+    records = _normalize_records(raw_records)
     print(f"{len(records)} lokale Tagesdatensätze geladen.", flush=True)
 
     if not options.offline:
@@ -172,8 +244,9 @@ def main() -> None:
                 print(f"Die Erfassung beginnt am {DATA_START_DATE.isoformat()}.")
                 print("Der erste vollständige Tagesdatensatz ist am 14.10. verfügbar.")
             else:
-                records = upsert_record(records, record)
-                save_records(records, DATA_PATH)
+                raw_records = _merge_record(raw_records, record)
+                records = _normalize_records(raw_records)
+                save_records(raw_records, DATA_PATH)
                 print(
                     f"Erfasst: {record['date']} | Ist {record['actual_kwh']:.2f} kWh | "
                     f"Potenzial {record['potential_kwh']:.2f} kWh | "
