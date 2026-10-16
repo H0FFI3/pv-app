@@ -3,4 +3,3 @@ alphaessopenapi
 aiohttp
 voluptuous
 python-dotenv
-pyinstaller
