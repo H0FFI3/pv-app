@@ -6,15 +6,15 @@
     <meta name="theme-color" content="#eef2ef">
     <meta name="description" content="Täglicher Überblick über PV-Ertrag, Modellpotenzial und Sonnenscheindauer.">
     <title>PV-Tagesbericht</title>
-    <link rel="stylesheet" href="styles.css">
-    <script src="dashboard.js" defer></script>
+    <link rel="stylesheet" href="styles.css" data-inline="styles">
+    <script src="dashboard.js" defer data-inline="script"></script>
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="./" aria-label="PV-Tagesbericht, Startseite">
+      <span class="brand">
         <span class="brand-mark" aria-hidden="true">PV</span>
         <span class="brand-name">TAGESBERICHT<span class="brand-divider">/</span>01</span>
-      </a>
+      </span>
       <div class="connection-state" id="connection-state" data-state="loading">
         <span class="state-dot" aria-hidden="true"></span>
         <span id="connection-label">Daten werden geladen</span>
@@ -72,7 +72,7 @@
             <div class="chart-unit">kWh / Tag</div>
           </div>
           <div class="chart-wrap energy-chart-wrap">
-            <canvas id="energy-chart" aria-label="Täglicher Ist-Ertrag und potentieller Ertrag. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="energy-tooltip"></canvas>
+            <canvas id="energy-chart" aria-label="Täglicher Ist-Ertrag und potentieller Ertrag. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="energy-tooltip" data-tooltip-id="energy-tooltip"></canvas>
             <div class="chart-tooltip" id="energy-tooltip" role="tooltip" hidden></div>
             <div class="empty-state" id="energy-empty" hidden>
               <span class="empty-mark" aria-hidden="true">01</span>
@@ -91,9 +91,27 @@
             <div class="chart-unit">Stunden / Tag</div>
           </div>
           <div class="chart-wrap sunshine-chart-wrap">
-            <canvas id="sunshine-chart" aria-label="Tägliche Sonnenstunden. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="sunshine-tooltip"></canvas>
+            <canvas id="sunshine-chart" aria-label="Tägliche Sonnenstunden. Mit Maus oder Fingertipp Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="sunshine-tooltip" data-tooltip-id="sunshine-tooltip"></canvas>
             <div class="chart-tooltip" id="sunshine-tooltip" role="tooltip" hidden></div>
             <div class="empty-state empty-state-compact" id="sunshine-empty" hidden><span>Noch keine Sonnenscheindaten</span></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="charts charts-single" aria-label="Verhältnis von Ist-Ertrag zu Potenzial">
+        <article class="chart-panel ratio-panel">
+          <div class="chart-heading">
+            <div><h3>Ist im Verhältnis zum Potenzial</h3><p>Anteil des modellierten Ertrags, der tatsächlich erzeugt wurde</p></div>
+            <div class="chart-unit">% / Tag</div>
+          </div>
+          <div class="chart-wrap ratio-chart-wrap">
+            <canvas id="ratio-chart" aria-label="Tägliches Verhältnis von Ist-Ertrag zu Potenzial. Mit Maus, Fingertipp oder Pfeiltasten Tageswerte anzeigen." role="img" tabindex="0" aria-describedby="ratio-tooltip" data-tooltip-id="ratio-tooltip"></canvas>
+            <div class="chart-tooltip" id="ratio-tooltip" role="tooltip" hidden></div>
+            <div class="empty-state empty-state-compact" id="ratio-empty" hidden><span>Noch keine Daten</span></div>
+          </div>
+          <div class="legend" aria-label="Legende Verhältnis">
+            <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ist / Potenzial</span>
+            <span><i class="legend-swatch reference-swatch" aria-hidden="true"></i>100 %</span>
           </div>
         </article>
       </section>
@@ -111,7 +129,7 @@
             <div class="chart-unit">kWh / Stunde</div>
           </div>
           <div class="chart-wrap hourly-chart-wrap">
-            <canvas id="hourly-chart" aria-label="Stündlicher Ist-Ertrag und potentieller Ertrag" role="img" tabindex="0" aria-describedby="hourly-tooltip" hidden></canvas>
+            <canvas id="hourly-chart" aria-label="Stündlicher Ist-Ertrag und potentieller Ertrag" role="img" tabindex="0" aria-describedby="hourly-tooltip" data-tooltip-id="hourly-tooltip" hidden></canvas>
             <div class="chart-tooltip" id="hourly-tooltip" role="tooltip" hidden></div>
             <div class="empty-state empty-state-compact" id="hourly-empty">
               <span>Stundenprofile erscheinen ab dem nächsten Erfassungslauf.</span>
@@ -122,6 +140,36 @@
             <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potentieller Ertrag</span>
           </div>
         </article>
+        <article class="chart-panel profile-panel">
+          <div class="chart-heading">
+            <div><h3>Abweichung nach Tageszeit</h3><p>Durchschnittliches Verhältnis Ist/Potenzial je Stunde über alle Tage mit Stundenprofil</p></div>
+            <div class="chart-unit">% je Stunde</div>
+          </div>
+          <div class="chart-wrap profile-chart-wrap">
+            <canvas id="profile-chart" aria-label="Durchschnittliches Verhältnis von Ist-Ertrag zu Potenzial je Tagesstunde" role="img" tabindex="0" aria-describedby="profile-tooltip" data-tooltip-id="profile-tooltip" hidden></canvas>
+            <div class="chart-tooltip" id="profile-tooltip" role="tooltip" hidden></div>
+            <div class="empty-state empty-state-compact" id="profile-empty"><span id="profile-empty-text">Die Auswertung erscheint ab 5 Tagen mit Stundenprofil.</span></div>
+          </div>
+          <div class="legend" aria-label="Legende Tageszeit">
+            <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ø Ist / Potenzial</span>
+            <span><i class="legend-swatch reference-swatch" aria-hidden="true"></i>100 %</span>
+          </div>
+          <p class="chart-hint">Stunden, die dauerhaft deutlich unter 100 % liegen, deuten auf Verschattung hin. Zur Mittagszeit kann auch eine Abregelung die Ursache sein.</p>
+        </article>
+      </section>
+
+      <section class="summary-section" aria-labelledby="summary-title">
+        <div class="section-heading history-heading">
+          <div><p class="eyebrow">SUMMEN</p><h2 id="summary-title">Zeiträume im Überblick</h2></div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th scope="col">Zeitraum</th><th scope="col">Tage</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Ist/Potenzial</th><th scope="col">Sonne</th></tr></thead>
+            <tbody id="summary-body">
+              <tr><td class="table-empty" colspan="6">Summen erscheinen nach dem ersten Datensatz.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="history-section" aria-labelledby="history-title">
@@ -131,13 +179,18 @@
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Sonne</th></tr></thead>
+            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Sonne</th><th scope="col">Ist/Potenzial</th></tr></thead>
             <tbody id="history-body">
-              <tr><td class="table-empty" colspan="4">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
+              <tr><td class="table-empty" colspan="5">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
+
+      <div class="page-notes">
+        <p>Das Potenzial ist ein Modellwert für ungestörten Betrieb: Abregelung (Einspeisebegrenzung, voller Akku) ist nicht enthalten, Verschattung nur, wenn sie in der Konfiguration aktiviert ist. Abweichungen zwischen Ist und Potenzial sind deshalb nicht automatisch Verschattung oder ein Defekt.</p>
+        <p id="source-note"></p>
+      </div>
 
       <footer class="page-footer">
         <span>Ist-Werte: AlphaESS <span aria-hidden="true">·</span> Wetterdaten: Open-Meteo <span aria-hidden="true">·</span> Potenzial: PVWatts</span>

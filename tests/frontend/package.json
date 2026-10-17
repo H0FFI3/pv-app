@@ -1,0 +1,8 @@
+{
+  "name": "pv-app-frontend-tests",
+  "private": true,
+  "type": "module",
+  "description": "Optionale Tests für site/dashboard.js (jsdom, ohne Browser). Ausführen: npm install && npm test",
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "jsdom": "^26.0.0" }
+}
