@@ -3,9 +3,10 @@ import asyncio
 import os
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from getpass import getpass
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pvlib
@@ -25,7 +26,12 @@ from pv_config import (
 
 
 WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OUTPUT_PATH = Path(__file__).with_name("pv_daily_comparison.json")
+WEATHER_HOURLY_VARIABLES = (
+    "temperature_2m,wind_speed_10m,shortwave_radiation,"
+    "direct_normal_irradiance,diffuse_radiation"
+)
 
 
 def parse_date(value: str) -> date:
@@ -53,26 +59,81 @@ def arguments() -> argparse.Namespace:
 def load_weather(
     start: date,
     end: date,
-) -> tuple[pd.DataFrame, float, dict[date, float]]:
-    response = requests.get(
-        WEATHER_URL,
-        params={
+) -> tuple[pd.DataFrame, float, dict[date, float], dict[date, str]]:
+    today = datetime.now(ZoneInfo(TIMEZONE)).date()
+    recent_start = max(start, today - timedelta(days=2))
+    archive_end = min(end, recent_start - timedelta(days=1))
+    weather_frames = []
+    sunshine_hours: dict[date, float] = {}
+    weather_sources: dict[date, str] = {}
+    elevations = []
+
+    if start <= archive_end:
+        archive_params = {
             "latitude": LATITUDE,
             "longitude": LONGITUDE,
             "start_date": (start - timedelta(days=1)).isoformat(),
-            "end_date": (end + timedelta(days=1)).isoformat(),
-            "hourly": (
-                "temperature_2m,wind_speed_10m,shortwave_radiation,"
-                "direct_normal_irradiance,diffuse_radiation,sunshine_duration"
-            ),
+            "end_date": (archive_end + timedelta(days=1)).isoformat(),
+            "hourly": WEATHER_HOURLY_VARIABLES + ",sunshine_duration",
             "timeformat": "unixtime",
             "wind_speed_unit": "ms",
             "timezone": "UTC",
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
+        }
+        try:
+            response = requests.get(WEATHER_URL, params=archive_params, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            frame, daily_sunshine, sources = _parse_weather_payload(
+                payload, start, archive_end, "archive"
+            )
+            weather_frames.append(frame)
+            sunshine_hours.update(daily_sunshine)
+            weather_sources.update(sources)
+            elevations.append(float(payload.get("elevation") or 0))
+        except requests.RequestException as error:
+            print(f"Warnung: Historische Wetterdaten nicht verfügbar ({error}).", flush=True)
+
+    if recent_start <= end:
+        forecast_params = {
+            "latitude": LATITUDE,
+            "longitude": LONGITUDE,
+            "past_days": 2,
+            "forecast_days": 1,
+            "hourly": WEATHER_HOURLY_VARIABLES,
+            "daily": "sunshine_duration",
+            "timeformat": "unixtime",
+            "wind_speed_unit": "ms",
+            "timezone": TIMEZONE,
+        }
+        try:
+            response = requests.get(FORECAST_URL, params=forecast_params, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            frame, daily_sunshine, sources = _parse_weather_payload(
+                payload, recent_start, end, "forecast"
+            )
+            weather_frames.append(frame)
+            sunshine_hours.update(daily_sunshine)
+            weather_sources.update(sources)
+            elevations.append(float(payload.get("elevation") or 0))
+        except requests.RequestException as error:
+            print(f"Warnung: Aktuelle Wetterprognose nicht verfügbar ({error}).", flush=True)
+
+    if not weather_frames:
+        raise RuntimeError("Open-Meteo lieferte für den angefragten Zeitraum keine Wetterdaten.")
+    weather = pd.concat(weather_frames).sort_index()
+    weather = weather[~weather.index.duplicated(keep="last")]
+    if not weather_sources:
+        raise RuntimeError("Open-Meteo lieferte keine verwertbaren Wetterwerte.")
+    return weather, elevations[-1], sunshine_hours, weather_sources
+
+
+def _parse_weather_payload(
+    payload: dict,
+    start: date,
+    end: date,
+    source: str,
+) -> tuple[pd.DataFrame, dict[date, float], dict[date, str]]:
     hourly = payload["hourly"]
     interval_midpoints = (
         pd.to_datetime(hourly["time"], unit="s", utc=True)
@@ -88,14 +149,35 @@ def load_weather(
         },
         index=interval_midpoints,
     ).dropna()
-    sunshine = pd.Series(hourly["sunshine_duration"], index=interval_midpoints)
-    sunshine_by_day = sunshine.groupby(sunshine.index.date).sum(min_count=1) / 3600
-    sunshine_hours = {
-        day: float(hours)
-        for day, hours in sunshine_by_day.items()
-        if start <= day <= end and pd.notna(hours)
+    if "sunshine_duration" in hourly:
+        sunshine = pd.Series(hourly["sunshine_duration"], index=interval_midpoints)
+        sunshine_by_day = sunshine.groupby(sunshine.index.date).sum(min_count=1) / 3600
+        sunshine_hours = {
+            day: float(hours)
+            for day, hours in sunshine_by_day.items()
+            if start <= day <= end and pd.notna(hours)
+        }
+    else:
+        sunshine_by_day = (weather["dni"] > 120).groupby(weather.index.date).sum()
+        sunshine_hours = {
+            day: float(hours)
+            for day, hours in sunshine_by_day.items()
+            if start <= day <= end and pd.notna(hours)
+        }
+    for day_text, seconds in zip(
+        payload.get("daily", {}).get("time", []),
+        payload.get("daily", {}).get("sunshine_duration", []),
+    ):
+        day = date.fromisoformat(str(day_text)[:10])
+        if start <= day <= end and seconds is not None:
+            sunshine_hours[day] = float(seconds) / 3600
+
+    weather_sources = {
+        day: source
+        for day in set(weather.index.date)
+        if start <= day <= end
     }
-    return weather, float(payload.get("elevation") or 0), sunshine_hours
+    return weather, sunshine_hours, weather_sources
 
 
 def aggregate_hourly_pv_power(
@@ -293,7 +375,7 @@ async def main() -> None:
     options = arguments()
     validate_configuration()
     actual_energy, inverter_power_kw, _ = await load_actual_energy(options.start, options.end)
-    weather, elevation, sunshine_hours = load_weather(options.start, options.end)
+    weather, elevation, sunshine_hours, _ = load_weather(options.start, options.end)
     potential = estimate_daily_potential(weather, elevation, inverter_power_kw)
 
     rows = []

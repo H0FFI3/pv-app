@@ -79,6 +79,8 @@ def _normalize_records(records: list[dict]) -> list[dict]:
             if not all(math.isfinite(value) for value in values.values()):
                 continue
             normalized = {"date": record["date"], **values}
+            if record.get("weather_source"):
+                normalized["weather_source"] = str(record["weather_source"])
             hourly_profile = []
             for point in record.get("hourly", []):
                 try:
@@ -146,54 +148,102 @@ def _merge_record(records: list[dict], updated_record: dict) -> list[dict]:
     return merged
 
 
-async def collect_yesterday() -> dict | None:
-    yesterday = datetime.now(ZoneInfo(TIMEZONE)).date() - timedelta(days=1)
+async def collect_backfill_records(
+    raw_records: list[dict],
+    refresh: bool = False,
+    today: date | None = None,
+) -> list[dict]:
+    today = today or datetime.now(ZoneInfo(TIMEZONE)).date()
+    yesterday = today - timedelta(days=1)
     if yesterday < DATA_START_DATE:
-        return None
+        return []
+
+    existing_dates = {
+        date.fromisoformat(record["date"])
+        for record in _normalize_records(raw_records)
+    }
+    if yesterday in existing_dates and not refresh:
+        print(f"{yesterday.isoformat()} ist bereits gespeichert; kein Datenabruf nötig.")
+        return []
+
+    last_saved_date = max(existing_dates, default=DATA_START_DATE - timedelta(days=1))
+    first_candidate = max(DATA_START_DATE, last_saved_date + timedelta(days=1))
+    missing_days = [
+        first_candidate + timedelta(days=offset)
+        for offset in range(max(0, (yesterday - first_candidate).days + 1))
+        if first_candidate + timedelta(days=offset) not in existing_dates
+    ]
+    if refresh and yesterday in existing_dates:
+        missing_days.append(yesterday)
+        missing_days.sort()
+    if not missing_days:
+        return []
+
+    try:
+        max_days = int(os.getenv("BACKFILL_MAX_DAYS", "14"))
+    except ValueError as error:
+        raise RuntimeError("BACKFILL_MAX_DAYS muss eine ganze Zahl sein.") from error
+    if max_days < 1:
+        raise RuntimeError("BACKFILL_MAX_DAYS muss mindestens 1 sein.")
+    if len(missing_days) > max_days:
+        skipped_days = len(missing_days) - max_days
+        print(
+            f"Warnung: {skipped_days} ältere(n) fehlende(n) Tag(e) übersprungen; "
+            f"BACKFILL_MAX_DAYS begrenzt diesen Lauf auf {max_days} Tage.",
+            flush=True,
+        )
+        missing_days = missing_days[:max_days]
+
+    start, end = missing_days[0], missing_days[-1]
     validate_configuration()
-    print(f"Datenabruf für {yesterday.isoformat()} wird gestartet.", flush=True)
+    print(f"Datenabruf für {start.isoformat()} bis {end.isoformat()} wird gestartet.", flush=True)
     actual_energy, inverter_power_kw, hourly_actual = await load_actual_energy(
-        yesterday,
-        yesterday,
+        start,
+        end,
         include_hourly=True,
     )
-    print("Wetter: rufe historische Strahlungs- und Sonnenscheindaten ab ...", flush=True)
-    weather, elevation, sunshine_hours = load_weather(yesterday, yesterday)
+    print("Wetter: rufe Strahlungs- und Sonnenscheindaten ab ...", flush=True)
+    weather, elevation, sunshine_hours, weather_sources = load_weather(start, end)
     print("Modell: berechne das wetterbasierte PV-Potenzial ...", flush=True)
     hourly_potential = estimate_hourly_potential(weather, elevation, inverter_power_kw)
-    potential = hourly_potential.resample("D").sum(min_count=1)
+    daily_potential = hourly_potential.resample("D").sum(min_count=1)
 
-    day_key = pd.Timestamp(yesterday).tz_localize(TIMEZONE)
-    if day_key not in potential.index:
-        raise RuntimeError(f"Für {yesterday.isoformat()} fehlen Wetterdaten.")
-    if yesterday not in sunshine_hours:
-        raise RuntimeError(f"Für {yesterday.isoformat()} fehlen Sonnenscheindaten.")
+    records = []
+    for day in missing_days:
+        day_key = pd.Timestamp(day).tz_localize(TIMEZONE)
+        if day not in actual_energy:
+            print(f"Warnung: Istwert für {day.isoformat()} fehlt; Tag wird übersprungen.", flush=True)
+            continue
+        if day_key not in daily_potential.index or pd.isna(daily_potential.loc[day_key]):
+            print(f"Warnung: Wetterdaten für {day.isoformat()} fehlen; Tag wird übersprungen.", flush=True)
+            continue
+        if day not in sunshine_hours:
+            print(f"Warnung: Sonnenscheindaten für {day.isoformat()} fehlen; Tag wird übersprungen.", flush=True)
+            continue
 
-    day_potential = hourly_potential[hourly_potential.index.date == yesterday]
-    hourly_measurements = hourly_actual.get(yesterday, {})
-    hourly_profile = [
-        {
-            "hour": timestamp.strftime("%H:00"),
-            "actual_kwh": hourly_measurements.get(timestamp.strftime("%H:00")),
-            "potential_kwh": round(float(hourly_kwh), 3),
-        }
-        for timestamp, hourly_kwh in day_potential.items()
-    ]
-    record = {
-        "date": yesterday.isoformat(),
-        "actual_kwh": round(actual_energy[yesterday], 2),
-        "potential_kwh": round(float(potential.loc[day_key]), 2),
-        "sunshine_hours": round(sunshine_hours[yesterday], 2),
-        "hourly": hourly_profile,
-    }
-    print("Datenabruf und Berechnung abgeschlossen.", flush=True)
-    return record
-
-
-def upsert_record(records: list[dict], record: dict) -> list[dict]:
-    by_date = {item["date"]: item for item in records}
-    by_date[record["date"]] = record
-    return [by_date[key] for key in sorted(by_date)]
+        day_potential = hourly_potential[hourly_potential.index.date == day]
+        hourly_measurements = hourly_actual.get(day, {})
+        hourly_profile = [
+            {
+                "hour": timestamp.strftime("%H:00"),
+                "actual_kwh": hourly_measurements.get(timestamp.strftime("%H:00")),
+                "potential_kwh": round(float(hourly_kwh), 3),
+            }
+            for timestamp, hourly_kwh in day_potential.items()
+            if pd.notna(hourly_kwh)
+        ]
+        records.append(
+            {
+                "date": day.isoformat(),
+                "actual_kwh": round(float(actual_energy[day]), 2),
+                "potential_kwh": round(float(daily_potential.loc[day_key]), 2),
+                "sunshine_hours": round(float(sunshine_hours[day]), 2),
+                "hourly": hourly_profile,
+                "weather_source": weather_sources.get(day, "archive"),
+            }
+        )
+    print(f"{len(records)} Tagesdatensätze erfasst.", flush=True)
+    return records
 
 
 def create_standalone_report(records: list[dict]) -> Path:
@@ -224,7 +274,8 @@ def create_standalone_report(records: list[dict]) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Erfasst PV-Tageswerte und öffnet den lokalen HTML-Bericht.")
     parser.add_argument("--offline", action="store_true", help="Nur vorhandene lokale Daten anzeigen.")
-    parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--refresh", action="store_true", help="Den Vortag trotz vorhandenem Datensatz erneut abrufen.")
+    parser.add_argument("--no-open", action="store_true", help="Bericht erstellen, aber nicht im Browser öffnen.")
     options = parser.parse_args()
 
     print("PV-Tagesbericht wird gestartet.", flush=True)
@@ -239,19 +290,20 @@ def main() -> None:
 
     if not options.offline:
         try:
-            record = asyncio.run(collect_yesterday())
-            if record is None:
-                print(f"Die Erfassung beginnt am {DATA_START_DATE.isoformat()}.")
-                print("Der erste vollständige Tagesdatensatz ist am 14.10. verfügbar.")
-            else:
-                raw_records = _merge_record(raw_records, record)
+            new_records = asyncio.run(
+                collect_backfill_records(raw_records, refresh=options.refresh)
+            )
+            if new_records:
+                for record in new_records:
+                    raw_records = _merge_record(raw_records, record)
                 records = _normalize_records(raw_records)
                 save_records(raw_records, DATA_PATH)
-                print(
-                    f"Erfasst: {record['date']} | Ist {record['actual_kwh']:.2f} kWh | "
-                    f"Potenzial {record['potential_kwh']:.2f} kWh | "
-                    f"Sonne {record['sunshine_hours']:.2f} h"
-                )
+                for record in new_records:
+                    print(
+                        f"Erfasst: {record['date']} | Ist {record['actual_kwh']:.2f} kWh | "
+                        f"Potenzial {record['potential_kwh']:.2f} kWh | "
+                        f"Sonne {record['sunshine_hours']:.2f} h"
+                    )
         except Exception as error:
             print(f"Aktualisierung fehlgeschlagen: {error}", flush=True)
             print("Der Bericht wird mit den zuletzt lokal gespeicherten Daten geöffnet.", flush=True)
