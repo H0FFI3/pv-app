@@ -86,6 +86,15 @@ h1 { margin-bottom: 7px; font-size: 32px; font-weight: 700; letter-spacing: 0; l
 .chart-unit { padding-top: 2px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .chart-wrap { position: relative; width: 100%; margin-top: 13px; }
 .energy-chart-wrap, .sunshine-chart-wrap { height: 250px; }
+.charts-single { grid-template-columns: minmax(0, 1fr); margin-top: 13px; }
+.ratio-chart-wrap { height: 200px; }
+.profile-chart-wrap { height: 220px; }
+.hourly-section .chart-panel + .chart-panel { margin-top: 13px; }
+.reference-swatch { width: 14px; height: 0; border-top: 2px dashed var(--orange); border-radius: 0; background: none; }
+.chart-hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.summary-section { margin-top: 36px; }
+.page-notes { margin-top: 26px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.page-notes p { max-width: 900px; margin: 0 0 5px; }
 .hourly-section { margin-top: 32px; }
 .hourly-heading { align-items: end; }
 .hourly-date-label { display: grid; gap: 5px; color: var(--muted); font-family: Consolas, "Courier New", monospace; font-size: 9px; font-weight: 600; letter-spacing: 0.04em; }
@@ -126,6 +135,7 @@ td:first-child { font-weight: 600; }
   .charts { grid-template-columns: 1fr; }
   .sunshine-chart-wrap, .energy-chart-wrap { height: 230px; }
   .hourly-chart-wrap { height: 250px; }
+  .ratio-chart-wrap, .profile-chart-wrap { height: 210px; }
 }
 @media (max-width: 540px) {
   .topbar { padding: 0 14px; }

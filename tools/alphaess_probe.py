@@ -1,3 +1,7 @@
+"""Diagnose: zeigt Anlagen und aktuelle Leistungsdaten der AlphaESS-API (Seriennummern werden gekürzt).
+
+Aufruf aus dem Projektordner: python tools/alphaess_probe.py
+"""
 import asyncio
 import json
 import os
@@ -9,7 +13,7 @@ from alphaess.alphaess import alphaess
 from dotenv import load_dotenv
 
 
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def redact_serials(value: Any) -> Any:

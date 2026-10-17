@@ -1,6 +1,9 @@
-pvlib
-alphaessopenapi
-aiohttp
-voluptuous
-python-dotenv
-pyinstaller
+# Laufzeit (direkt importierte Pakete sind explizit aufgeführt)
+pvlib>=0.11
+pandas>=2.0
+numpy>=1.26
+requests>=2.31
+aiohttp>=3.9
+alphaessopenapi>=0.0.21
+voluptuous>=0.14   # wird von alphaessopenapi benötigt, dort aber nicht deklariert
+python-dotenv>=1.0
