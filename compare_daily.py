@@ -7,13 +7,16 @@ import argparse
 import asyncio
 import sys
 from datetime import date, timedelta
-import time
-from datetime import date, datetime, timedelta
-from getpass import getpass
+from pathlib import Path
 
-WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
-FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+import pandas as pd
 
+from pvapp import model, paths, sources
+from pvapp.config import ConfigError, load_config
+from pvapp.interactive import chooser_for_terminal, prompt_credentials
+from pvapp.logging_setup import REDACTOR, setup_logging
+
+OUTPUT_PATH = Path(__file__).with_name("pv_daily_comparison.json")
 
 
 def parse_date(value: str) -> date:

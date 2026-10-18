@@ -37,6 +37,7 @@ oder Zugangsdaten. `.env` wird nicht eingecheckt.
 python pv_app.py                 # aktualisieren, Bericht erzeugen und öffnen
 python pv_app.py --offline       # nur lokale Daten anzeigen, keine Abrufe
 python pv_app.py --refresh       # den Vortag auch dann neu abrufen, wenn er schon gespeichert ist
+python pv_app.py --refresh-days 5  # die letzten 5 Tage neu abrufen (1 bis 92)
 python pv_app.py --no-open       # Bericht erzeugen, aber nicht öffnen (z. B. Aufgabenplanung)
 python pv_app.py --verbose       # ausführlichere Protokollierung
 ```
@@ -118,8 +119,8 @@ Werte denen der Vorversion entsprechen. Schalte sie einzeln ein und vergleiche d
 
 **Bekannte Modellgrenzen**
 
-- **Abregelung ist nicht modelliert** (Einspeisebegrenzung, voller Akku). Der AlphaESS-Ist-Ertrag
-  enthält sie, das Potenzial nicht. Abweichungen zwischen Ist und Potenzial sind deshalb **nicht
+- **Abregelung ist nicht modelliert** (Einspeisebegrenzung, voller Akku), wird aber erkannt und markiert
+  (siehe oben). Der AlphaESS-Ist-Ertrag enthält sie, das Potenzial nicht. Abweichungen zwischen Ist und Potenzial sind deshalb **nicht
   automatisch Verschattung oder Defekt**. Die Auswertung „Abweichung nach Tageszeit“ hilft zu
   unterscheiden: Dauerhaft niedrige Morgen-/Abendstunden deuten auf Verschattung, niedrige
   Mittagsstunden eher auf Begrenzung.
@@ -129,6 +130,47 @@ Werte denen der Vorversion entsprechen. Schalte sie einzeln ein und vergleiche d
 - Diffuse Strahlung und Bodenreflexion erhalten keinen Einfallswinkel-Modifikator.
 - Schneebedeckung, Verschmutzung und Modulalterung sind nicht enthalten.
 - Sonnenstunden folgen der WMO-Schwelle von 120 W/m² direkter Normalstrahlung (Open-Meteo).
+
+## Abregelung erkennen und markieren
+
+Hybrid-Wechselrichter drosseln die PV-Leistung, wenn der Akku voll ist und die Einspeisung begrenzt wird.
+Das Modell kennt das nicht, der AlphaESS-Ist-Ertrag enthält es. Die App markiert deshalb Stunden, die
+**wahrscheinlich abgeregelt** wurden:
+
+1. Der Ist-Ertrag der Stunde liegt mindestens `CURTAILMENT_MIN_DEFICIT` (Standard 20 %) unter dem Potenzial
+   und das Potenzial beträgt mindestens `CURTAILMENT_MIN_POTENTIAL_KWH` (Standard 0,3 kWh), und
+2. mindestens ein Hinweis aus den AlphaESS-Leistungsdaten (5-Minuten-Werte, ohne zusätzliche Abrufe):
+   - **Einspeiselimit erreicht:** die mittlere Netzleistung der Stunde liegt bei mindestens 95 %
+     von `FEED_IN_LIMIT_W` (nur wenn das Limit gesetzt ist), oder
+   - **Akku voll:** der Ladestand erreichte `BATTERY_FULL_SOC_PCT` (Standard 97 %).
+
+Im Bericht erscheinen markierte Stunden im Stundendiagramm als hinterlegtes Band (Tooltip: Grund, Akkustand,
+Netzleistung), pro Tag und in den Summen als „Stunden · kWh“ sowie in den CSV-Spalten `curtailed_hours` und
+`curtailed_kwh`. Die Auswertung „Abweichung nach Tageszeit“ **lässt markierte Stunden weg**, damit
+Abregelung keine Verschattung vortäuscht. Eine Anzeige „-“ bedeutet: für den Tag liegen keine Signale
+vor, die Erkennung ist nicht möglich. „keine“ bedeutet: geprüft, nichts erkannt.
+
+**Wichtig zur Einordnung**
+
+- Es ist eine Heuristik. Ein zu optimistisches Potenzial (z. B. ohne Horizont oder IAM) kann zusammen mit
+  vollem Akku fälschlich als Abregelung erscheinen. Das Einspeiselimit (`FEED_IN_LIMIT_W`) ist der stärkere
+  Hinweis, „Akku voll“ allein der schwächere. Erhöhe bei zu vielen Markierungen `CURTAILMENT_MIN_DEFICIT`.
+- Die angegebene Menge ist eine **Obergrenze** (Potenzial minus Ist in den markierten Stunden, inklusive
+  Modellabweichung).
+- Gespeichert werden nur die Rohsignale je Stunde (`soc_pct`, `feed_in_w`). Die Markierung wird bei jeder
+  Berichtserstellung neu berechnet; geänderte Schwellen gelten damit **rückwirkend** für alle Tage,
+  die schon Signale haben.
+- **Ältere Tage werden nachgeladen:** Tage, die vor der Abregelungserkennung gespeichert wurden, bekommen ihre
+  Akku-/Netzdaten beim nächsten Start nachgeladen (innerhalb des Fensters `BACKFILL_MAX_DAYS`, ein Abruf je
+  Tag mit der üblichen Schutzpause). Ist-, Potenzial- und Sonnenwerte bleiben dabei unverändert. Der Tag wird
+  danach als geprüft vermerkt (`signals_checked`) und nicht erneut abgefragt, auch wenn AlphaESS für ihn
+  keine Daten mehr liefert. Schlägt der Abruf fehl, wird er beim nächsten Start wiederholt.
+- **Keine Einspeisung erlaubt (Nulleinspeisung)?** Dann gibt es kein Einspeiselimit zum Vergleichen; lass
+  `FEED_IN_LIMIT_W` leer. Es greift die Regel „Akku voll“.
+- Die Feldnamen (`cbat` = Akkustand in %, `feedIn` = Netzleistung in W) stammen aus der AlphaESS-Doku und
+  können je nach Anlage abweichen. Mit `python tools/alphaess_fields.py` siehst du die tatsächlichen
+  Felder (Seriennummern maskiert); passende Namen trägst du in `ALPHAESS_SOC_FIELD` und
+  `ALPHAESS_FEED_IN_FIELD` ein. Fehlen die Felder, warnt die App einmal pro Lauf.
 
 ## Bericht
 
@@ -152,5 +194,5 @@ sie automatisch mit `python -m pytest` oder einzeln mit `npm test` (Umgebungsvar
 
 Aufbau: `pv_app.py` (Einstieg) → `pvapp/` mit `config.py` (Konfiguration), `sources.py` (AlphaESS,
 Open-Meteo, PVGIS), `model.py` (reines PV-Modell), `storage.py` (Historie), `report.py` (HTML),
-`app.py` (Ablauf und CLI), `interactive.py`, `logging_setup.py`, `paths.py`. `tools/alphaess_probe.py`
-ist ein Diagnosewerkzeug für die AlphaESS-API.
+`curtailment.py` (Abregelungserkennung), `app.py` (Ablauf und CLI), `interactive.py`, `logging_setup.py`, `paths.py`. `tools/alphaess_probe.py` und
+`tools/alphaess_fields.py` sind Diagnosewerkzeuge für die AlphaESS-API.

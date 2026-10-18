@@ -262,3 +262,29 @@ def test_system_selection():
         sources.choose_system([one, two], "X")
     with pytest.raises(SourceError, match="keine Anlagen"):
         sources.choose_system([])
+
+
+def test_signals_are_collected_per_hour(config):
+    day = date(2026, 10, 13)
+    samples = [{**s, "cbat": 100, "feedIn": 4000} for s in samples_for_day(day, 10, 12, 3000)]
+    client = FakeAlphaess(energy={"2026-10-13": {"epv": 6.0}}, power={"2026-10-13": samples})
+    result = fetch(config, [day], client, include_hourly=True)
+    assert result.signals[day]["10:00"] == {"soc_pct": 100.0, "feed_in_w": 4000.0}
+
+
+def test_missing_fields_are_reported_once(config, caplog):
+    days = [date(2026, 10, 13), date(2026, 10, 14)]
+    energy = {d.isoformat(): {"epv": 3.0} for d in days}
+    power = {d.isoformat(): samples_for_day(d, 10, 12, 500) for d in days}  # ohne cbat/feedIn
+    with caplog.at_level("WARNING"):
+        fetch(config, days, FakeAlphaess(energy=energy, power=power), include_hourly=True)
+    warnings = [r for r in caplog.records if "cbat" in r.getMessage()]
+    assert len(warnings) == 1 and "feedIn" in warnings[0].getMessage() and "alphaess_fields" in warnings[0].getMessage()
+
+
+def test_custom_field_names_from_the_configuration_are_used(make_config):
+    config = make_config(ALPHAESS_SOC_FIELD="soc", ALPHAESS_FEED_IN_FIELD="grid")
+    day = date(2026, 10, 13)
+    samples = [{**s, "soc": 77, "grid": 1500} for s in samples_for_day(day, 10, 12, 500)]
+    result = fetch(config, [day], FakeAlphaess(energy={"2026-10-13": {"epv": 1.0}}, power={"2026-10-13": samples}), include_hourly=True)
+    assert result.signals[day]["10:00"] == {"soc_pct": 77.0, "feed_in_w": 1500.0}

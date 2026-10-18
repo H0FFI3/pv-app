@@ -259,6 +259,43 @@ def load_horizon(
 # =============================================================================
 
 
+def _samples_frame(
+    samples: list[dict],
+    day: date,
+    timezone: str,
+    extra_fields: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Leistungsproben als DataFrame (Index = lokale Uhrzeit ohne Zeitzone, nur ``day``).
+
+    Zeitstempel ohne Zeitzone gelten als lokale Uhrzeit und werden ohne Zeitzonenumrechnung verarbeitet,
+    damit an Zeitumstellungstagen keine Proben verloren gehen. ``extra_fields``: Spaltenname -> AlphaESS-Feld.
+    """
+    columns = {
+        "upload_time": [sample.get("uploadTime") for sample in samples],
+        "power_w": [sample.get("ppv") for sample in samples],
+    }
+    for name, source in (extra_fields or {}).items():
+        columns[name] = [sample.get(source) for sample in samples]
+    frame = pd.DataFrame(columns)
+    if frame.empty:
+        return frame
+
+    frame["upload_time"] = pd.to_datetime(frame["upload_time"], errors="coerce")
+    for name in ["power_w", *(extra_fields or {})]:
+        frame[name] = pd.to_numeric(frame[name], errors="coerce")
+    frame = frame.dropna(subset=["upload_time", "power_w"])
+    if frame.empty:
+        return frame
+
+    timestamps = pd.DatetimeIndex(frame["upload_time"])
+    if timestamps.tz is not None:
+        timestamps = timestamps.tz_convert(timezone).tz_localize(None)
+    frame.index = timestamps
+    frame = frame.sort_index()
+    frame = frame[~frame.index.duplicated(keep="last")]
+    return frame[frame.index.date == day]
+
+
 def aggregate_hourly_pv_power(
     samples: list[dict],
     day: date,
@@ -267,32 +304,9 @@ def aggregate_hourly_pv_power(
 ) -> dict[str, float]:
     """Verdichtet AlphaESS-Leistungsproben (W, typ. 5 min) zu Stunden-kWh und skaliert auf den Tageswert.
 
-    Zeitstempel ohne Zeitzone gelten als lokale Uhrzeit und werden ohne Zeitzonenumrechnung verarbeitet,
-    damit an Zeitumstellungstagen keine Proben verloren gehen. Die doppelte Stunde im Herbst
-    erscheint als ein Eintrag "02:00".
+    Die doppelte Stunde im Herbst erscheint als ein Eintrag "02:00".
     """
-    frame = pd.DataFrame(
-        {
-            "upload_time": [sample.get("uploadTime") for sample in samples],
-            "power_w": [sample.get("ppv") for sample in samples],
-        }
-    )
-    if frame.empty:
-        return {}
-
-    frame["upload_time"] = pd.to_datetime(frame["upload_time"], errors="coerce")
-    frame["power_w"] = pd.to_numeric(frame["power_w"], errors="coerce")
-    frame = frame.dropna(subset=["upload_time", "power_w"])
-    if frame.empty:
-        return {}
-
-    timestamps = pd.DatetimeIndex(frame["upload_time"])
-    if timestamps.tz is not None:
-        timestamps = timestamps.tz_convert(timezone).tz_localize(None)
-    frame.index = timestamps
-    frame = frame.sort_index()
-    frame = frame[~frame.index.duplicated(keep="last")]
-    frame = frame[frame.index.date == day]
+    frame = _samples_frame(samples, day, timezone)
     if len(frame) < 2:
         return {}
 
@@ -308,6 +322,33 @@ def aggregate_hourly_pv_power(
     if measured_total > 0:
         hourly_energy *= max(0.0, daily_energy_kwh) / measured_total
     return {timestamp.strftime("%H:00"): round(float(energy), 3) for timestamp, energy in hourly_energy.items()}
+
+
+def aggregate_hourly_signals(
+    samples: list[dict],
+    day: date,
+    timezone: str,
+    soc_field: str = "cbat",
+    feed_in_field: str = "feedIn",
+) -> dict[str, dict[str, float]]:
+    """Stundenwerte für die Abregelungserkennung: ``soc_pct`` (Maximum der Stunde) und
+    ``feed_in_w`` (Mittelwert des Betrags der Netzleistung). Fehlt ein Feld, fehlt der Schlüssel."""
+    frame = _samples_frame(samples, day, timezone, {"soc": soc_field, "feed_in": feed_in_field})
+    if frame.empty:
+        return {}
+    grouped = frame.groupby(frame.index.floor("h"))
+    soc = grouped["soc"].max()
+    feed_in = frame["feed_in"].abs().groupby(frame.index.floor("h")).mean()
+    result: dict[str, dict[str, float]] = {}
+    for timestamp in soc.index:
+        values = {}
+        if pd.notna(soc[timestamp]):
+            values["soc_pct"] = round(float(soc[timestamp]), 1)
+        if pd.notna(feed_in[timestamp]):
+            values["feed_in_w"] = round(float(feed_in[timestamp]), 0)
+        if values:
+            result[timestamp.strftime("%H:00")] = values
+    return result
 
 
 class RateLimiter:
@@ -340,6 +381,7 @@ class ActualResult:
     inverter_power_kw: float
     energy: dict[date, float] = field(default_factory=dict)
     hourly: dict[date, dict[str, float]] = field(default_factory=dict)
+    signals: dict[date, dict[str, dict[str, float]]] = field(default_factory=dict)
     errors: dict[date, str] = field(default_factory=dict)
 
 
@@ -406,6 +448,7 @@ async def fetch_actuals(
 
         result = ActualResult(inverter_power_kw=inverter_power_kw)
         ordered = sorted(days)
+        warned_fields = False
         for position, day in enumerate(ordered, start=1):
             await limiter.wait(f"vor Tagesertrag {day.isoformat()}")
             log.info("AlphaESS: rufe Tagesertrag für %s ab ...", day.isoformat())
@@ -429,7 +472,22 @@ async def fetch_actuals(
                     result.hourly[day] = aggregate_hourly_pv_power(
                         samples, day, result.energy[day], config.timezone
                     )
+                    result.signals[day] = aggregate_hourly_signals(
+                        samples, day, config.timezone, config.alphaess_soc_field, config.alphaess_feed_in_field
+                    )
                     log.info("AlphaESS: %d Leistungsproben erhalten.", len(samples))
+                    missing = [
+                        name
+                        for name in (config.alphaess_soc_field, config.alphaess_feed_in_field)
+                        if samples and not any(name in sample for sample in samples)
+                    ]
+                    if missing and not warned_fields:
+                        warned_fields = True
+                        log.warning(
+                            "Die AlphaESS-Leistungsdaten enthalten kein Feld %s; die Abregelungserkennung ist eingeschränkt. "
+                            "Feldnamen anzeigen: python tools/alphaess_fields.py; anpassen: ALPHAESS_SOC_FIELD / ALPHAESS_FEED_IN_FIELD.",
+                            ", ".join(missing),
+                        )
                 except Exception as error:
                     log.warning("AlphaESS: Stundenwerte für %s nicht verfügbar (%s).", day.isoformat(), error)
                     result.hourly[day] = {}

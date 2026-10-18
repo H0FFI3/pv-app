@@ -114,3 +114,59 @@ def test_failed_write_leaves_original_intact_and_no_temp_files(tmp_path, monkeyp
 
     assert path.read_text(encoding="utf-8") == before
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_hourly_battery_and_grid_signals_are_kept_and_invalid_ones_dropped():
+    raw = record(
+        "2026-10-13",
+        hourly=[
+            {"hour": "12:00", "actual_kwh": 1.0, "potential_kwh": 2.0, "soc_pct": 100.0, "feed_in_w": 4000.0},
+            {"hour": "13:00", "actual_kwh": 1.0, "potential_kwh": 2.0, "soc_pct": float("nan")},
+        ],
+    )
+    hours = storage.normalize_record(raw)["hourly"]
+    assert hours[0]["soc_pct"] == 100.0 and hours[0]["feed_in_w"] == 4000.0
+    assert "soc_pct" not in hours[1]
+
+
+# ---------------------------------------------------------- Signale nachladen (Altdatensätze)
+
+
+def legacy_day(day, hourly=None, **extra):
+    """Datensatz aus der Zeit vor der Abregelungserkennung: Stundenprofil ohne Signale, ohne Vermerk."""
+    hourly = hourly or [{"hour": "11:00", "actual_kwh": 1.0, "potential_kwh": 3.0}, {"hour": "12:00", "actual_kwh": 1.2, "potential_kwh": 3.2}]
+    return record(day, hourly=hourly, **extra)
+
+
+def test_legacy_days_are_candidates_for_signal_backfill():
+    raw = [
+        legacy_day("2026-10-14"),
+        legacy_day("2026-10-15", signals_checked=True),  # schon abgefragt, auch ohne Ergebnis
+        record("2026-10-13"),  # kein Stundenprofil: nichts nachzuladen
+        legacy_day("2026-10-16", hourly=[{"hour": "12:00", "actual_kwh": 1, "potential_kwh": 2, "soc_pct": 90.0}]),  # hat Signale
+        legacy_day("2026-10-17", actual="kaputt"),  # ungültig
+    ]
+    assert storage.days_missing_signals(raw) == {date(2026, 10, 14)}
+
+
+def test_apply_signals_adds_only_signals_and_marks_the_day():
+    raw = [legacy_day("2026-10-14"), legacy_day("2026-10-15")]
+    result = storage.apply_signals(raw, date(2026, 10, 14), {"12:00": {"soc_pct": 100.0, "feed_in_w": 0.0}, "03:00": {"soc_pct": 5.0}})
+    day = result[0]
+    assert day["signals_checked"] is True
+    assert day["hourly"][1] == {"hour": "12:00", "actual_kwh": 1.2, "potential_kwh": 3.2, "soc_pct": 100.0, "feed_in_w": 0.0}
+    assert day["hourly"][0] == {"hour": "11:00", "actual_kwh": 1.0, "potential_kwh": 3.0}  # Stunde ohne Signal unverändert
+    assert (day["actual_kwh"], day["potential_kwh"]) == (5.0, 6.0)
+    assert result[1] == raw[1] and "signals_checked" not in raw[0], "Eingabedaten und andere Tage bleiben unberührt"
+    assert storage.days_missing_signals(result) == {date(2026, 10, 15)}
+
+
+def test_empty_signals_still_mark_the_day_as_checked():
+    result = storage.apply_signals([legacy_day("2026-10-14")], date(2026, 10, 14), {})
+    assert result[0]["signals_checked"] is True and storage.days_missing_signals(result) == set()
+    assert "soc_pct" not in result[0]["hourly"][0]
+
+
+def test_signals_checked_survives_normalization():
+    assert storage.normalize_record(legacy_day("2026-10-14", signals_checked=True))["signals_checked"] is True
+    assert "signals_checked" not in storage.normalize_record(legacy_day("2026-10-14"))

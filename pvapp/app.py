@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import copy
 import logging
+import os
 import sys
 import webbrowser
 from dataclasses import dataclass, field
@@ -14,8 +15,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from . import model, paths, sources, storage
-from .config import Config, ConfigError, load_config
+from . import curtailment, model, paths, sources, storage
+from .config import Config, ConfigError, curtailment_settings_from_env, load_config
 from .interactive import chooser_for_terminal, is_interactive, prompt_credentials
 from .logging_setup import REDACTOR, setup_logging
 from .report import create_standalone_report, resolve_report_path
@@ -28,7 +29,8 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class CollectionPlan:
-    days: list[date] = field(default_factory=list)
+    days: list[date] = field(default_factory=list)  # neu bzw. vollständig neu zu erfassen
+    signal_days: list[date] = field(default_factory=list)  # nur Akku-/Netzsignale nachladen (Tag bleibt sonst unverändert)
     before_start: bool = False  # gestern liegt noch vor DATA_START_DATE
     skipped_older: int = 0  # fehlende Tage außerhalb des Backfill-Fensters
     up_to_date: bool = False
@@ -40,19 +42,34 @@ def plan_days(
     data_start: date,
     max_days: int,
     refresh: bool = False,
+    *,
+    refresh_days: int = 0,
+    signal_candidates: set[date] | frozenset[date] = frozenset(),
 ) -> CollectionPlan:
-    """Bestimmt, welche Tage erfasst werden: alle fehlenden Tage zwischen DATA_START_DATE und gestern,
-    höchstens die letzten ``max_days``. Mit ``refresh`` wird zusätzlich gestern neu abgerufen."""
+    """Bestimmt, was erfasst wird.
+
+    - Alle fehlenden Tage zwischen DATA_START_DATE und gestern, höchstens die letzten ``max_days``.
+    - ``refresh`` bzw. ``refresh_days``: zusätzlich die letzten N Tage (gespeicherte) neu abrufen.
+    - ``signal_candidates``: gespeicherte Tage ohne Akku-/Netzsignale; nur deren Signale werden nachgeladen
+      (ebenfalls begrenzt auf das Fenster der letzten ``max_days`` Tage).
+    """
     yesterday = today - timedelta(days=1)
     if yesterday < data_start:
         return CollectionPlan(before_start=True)
     span = (yesterday - data_start).days + 1
     missing = [data_start + timedelta(days=i) for i in range(span) if (data_start + timedelta(days=i)) not in stored]
-    if refresh and yesterday in stored:
-        missing.append(yesterday)
+    refresh_days = max(refresh_days, 1 if refresh else 0)
+    for offset in range(refresh_days):
+        day = yesterday - timedelta(days=offset)
+        if day >= data_start and day in stored:
+            missing.append(day)
+    missing = sorted(set(missing))
     skipped = max(0, len(missing) - max_days)
     days = missing[-max_days:] if missing else []
-    return CollectionPlan(days=days, skipped_older=skipped, up_to_date=not days)
+
+    window_start = yesterday - timedelta(days=max_days - 1)
+    signal_days = sorted(d for d in signal_candidates if window_start <= d <= yesterday and d not in days)
+    return CollectionPlan(days=days, signal_days=signal_days, skipped_older=skipped, up_to_date=not days and not signal_days)
 
 
 # ------------------------------------------------------------------------- Erfassung
@@ -110,14 +127,13 @@ async def collect_records(
             result.skipped[day] = "Für den Tag konnte kein Potenzial berechnet werden"
             continue
         measured = actual.hourly.get(day, {})
-        profile = [
-            {
-                "hour": timestamp.strftime("%H:00"),
-                "actual_kwh": measured.get(timestamp.strftime("%H:00")),
-                "potential_kwh": round(float(value), 3),
-            }
-            for timestamp, value in day_hours.items()
-        ]
+        signals = actual.signals.get(day, {})
+        profile = []
+        for timestamp, value in day_hours.items():
+            label = timestamp.strftime("%H:00")
+            point = {"hour": label, "actual_kwh": measured.get(label), "potential_kwh": round(float(value), 3)}
+            point.update(signals.get(label, {}))  # soc_pct / feed_in_w, soweit AlphaESS sie liefert
+            profile.append(point)
         result.records.append(
             {
                 "date": day.isoformat(),
@@ -128,7 +144,24 @@ async def collect_records(
                 "hourly": profile,
             }
         )
+        if day in actual.signals:  # Leistungsdaten wurden erfolgreich abgerufen (auch wenn ohne Akku-/Netzfelder)
+            result.records[-1]["signals_checked"] = True
     return result
+
+
+async def collect_signals(
+    config: Config,
+    days: list[date],
+    *,
+    chooser: Callable[[list[dict]], dict] | None = None,
+    fetch_actuals_fn: Callable[..., Any] = sources.fetch_actuals,
+) -> dict[date, dict[str, dict[str, float]]]:
+    """Lädt nur die Akku-/Netzsignale für bereits gespeicherte Tage. Rückgabe: Tag -> Stunde -> Signale,
+    nur für Tage, deren Leistungsdaten erfolgreich abgerufen wurden (Ergebnis kann leer sein)."""
+    if not days:
+        return {}
+    actual = await fetch_actuals_fn(config, sorted(days), include_hourly=True, chooser=chooser)
+    return {day: actual.signals[day] for day in days if day in actual.signals}
 
 
 # ------------------------------------------------------------------------------ CLI
@@ -141,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--offline", action="store_true", help="Nur vorhandene lokale Daten anzeigen (kein Abruf).")
     parser.add_argument("--refresh", action="store_true", help="Den Vortag auch dann neu abrufen, wenn er schon gespeichert ist.")
+    parser.add_argument("--refresh-days", type=int, metavar="N", help="Die letzten N Tage neu abrufen (1 bis 92), auch wenn sie schon gespeichert sind.")
     parser.add_argument("--no-open", action="store_true", help="Bericht erzeugen, aber nicht im Browser öffnen (z. B. für Aufgabenplanung).")
     parser.add_argument("--verbose", action="store_true", help="Ausführliche Protokollierung.")
     return parser
@@ -155,15 +189,29 @@ def _try_config() -> tuple[Config | None, str | None]:
     return config, None
 
 
+def _fallback_curtailment() -> curtailment.CurtailmentSettings:
+    """Ohne vollständige Konfiguration (z. B. --offline): Einstellungen aus der Umgebung, sonst Standardwerte."""
+    try:
+        return curtailment_settings_from_env(os.environ)
+    except ConfigError as error:
+        log.warning("%s Es gelten die Standardwerte der Abregelungserkennung.", error)
+        return curtailment.CurtailmentSettings()
+
+
 def update_history(payload: dict, config: Config, options: argparse.Namespace) -> bool:
     """Erfasst fehlende Tage und aktualisiert ``payload['records']``. Gibt zurück, ob sich etwas geändert hat."""
     today = sources.local_today(config.timezone)
+    refresh_days = options.refresh_days or 0
+    if not 0 <= refresh_days <= 92:
+        raise ConfigError("--refresh-days erwartet eine Zahl von 1 bis 92.")
     plan = plan_days(
         storage.stored_dates(payload["records"]),
         today,
         config.data_start_date,
         config.backfill_max_days,
         refresh=options.refresh,
+        refresh_days=refresh_days,
+        signal_candidates=storage.days_missing_signals(payload["records"]) if config.curtailment.enabled else frozenset(),
     )
     if plan.before_start:
         first_full = config.data_start_date + timedelta(days=1)
@@ -182,11 +230,26 @@ def update_history(payload: dict, config: Config, options: argparse.Namespace) -
 
     config = prompt_credentials(config)
     REDACTOR.add(*config.secrets)
-    log.info(
-        "Datenabruf für %s wird gestartet.",
-        ", ".join(day.isoformat() for day in plan.days) if len(plan.days) <= 3 else f"{len(plan.days)} Tage ({plan.days[0]} bis {plan.days[-1]})",
-    )
-    result = asyncio.run(collect_records(config, plan.days, chooser=chooser_for_terminal()))
+    if plan.days:
+        log.info(
+            "Datenabruf für %s wird gestartet.",
+            ", ".join(day.isoformat() for day in plan.days) if len(plan.days) <= 3 else f"{len(plan.days)} Tage ({plan.days[0]} bis {plan.days[-1]})",
+        )
+    if plan.signal_days:
+        log.info(
+            "Akku-/Netzdaten für die Abregelungserkennung werden für %d bereits gespeicherte Tage nachgeladen (%s).",
+            len(plan.signal_days),
+            ", ".join(day.isoformat() for day in plan.signal_days),
+        )
+
+    async def gather():
+        collected = await collect_records(config, plan.days, chooser=chooser_for_terminal()) if plan.days else CollectionResult()
+        if plan.days and plan.signal_days:
+            await asyncio.sleep(config.api_request_interval_seconds)  # API-Schutzpause zwischen zwei Anmeldungen
+        signals = await collect_signals(config, plan.signal_days, chooser=chooser_for_terminal()) if plan.signal_days else {}
+        return collected, signals
+
+    result, signal_result = asyncio.run(gather())
 
     for record in result.records:
         payload["records"] = storage.upsert_record(payload["records"], record)
@@ -200,7 +263,16 @@ def update_history(payload: dict, config: Config, options: argparse.Namespace) -
         )
     for day, reason in sorted(result.skipped.items()):
         log.warning("Übersprungen: %s – %s. Beim nächsten Start wird es erneut versucht.", day.isoformat(), reason)
-    return bool(result.records)
+
+    for day, signals in sorted(signal_result.items()):
+        payload["records"] = storage.apply_signals(payload["records"], day, signals)
+        if signals:
+            log.info("Akku-/Netzdaten nachgeladen: %s (%d Stunden mit Signalen).", day.isoformat(), len(signals))
+        else:
+            log.warning("AlphaESS liefert für %s keine Akku-/Netzdaten mehr; der Tag wird nicht erneut abgefragt.", day.isoformat())
+    for day in sorted(set(plan.signal_days) - set(signal_result)):
+        log.warning("Nachladen für %s nicht möglich; beim nächsten Start wird es erneut versucht.", day.isoformat())
+    return bool(result.records) or bool(signal_result)
 
 
 def run(options: argparse.Namespace) -> int:
@@ -238,6 +310,10 @@ def run(options: argparse.Namespace) -> int:
         storage.save_payload(payload, data_path)
 
     display = storage.valid_records(payload["records"], config.data_start_date if config else None)
+    display = curtailment.annotate_records(display, config.curtailment if config else _fallback_curtailment())
+    flagged = sum(r.get("curtailment", {}).get("hours", 0) for r in display)
+    if flagged:
+        log.info("Abregelung: %d Stunde(n) in der Historie als wahrscheinlich abgeregelt markiert.", flagged)
     log.info("Erzeuge eigenständigen HTML-Bericht ...")
     report_path = resolve_report_path(config.report_path if config else None, paths.app_directory(), paths.app_data_directory())
     create_standalone_report(display, paths.resource_root(), report_path)

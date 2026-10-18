@@ -138,7 +138,9 @@
           <div class="legend" aria-label="Stundenchart-Legende">
             <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ist-Ertrag</span>
             <span><i class="legend-swatch potential-swatch" aria-hidden="true"></i>Potentieller Ertrag</span>
+            <span id="hourly-curtailed-legend" hidden><i class="legend-swatch curtailed-swatch" aria-hidden="true"></i>Abregelung wahrscheinlich</span>
           </div>
+          <p class="chart-hint" id="hourly-curtailment-note"></p>
         </article>
         <article class="chart-panel profile-panel">
           <div class="chart-heading">
@@ -154,7 +156,8 @@
             <span><i class="legend-swatch actual-swatch" aria-hidden="true"></i>Ø Ist / Potenzial</span>
             <span><i class="legend-swatch reference-swatch" aria-hidden="true"></i>100 %</span>
           </div>
-          <p class="chart-hint">Stunden, die dauerhaft deutlich unter 100 % liegen, deuten auf Verschattung hin. Zur Mittagszeit kann auch eine Abregelung die Ursache sein.</p>
+          <p class="chart-hint">Stunden, die dauerhaft deutlich unter 100 % liegen, deuten auf Verschattung hin. Als abgeregelt erkannte Stunden sind ausgenommen.</p>
+          <p class="chart-hint" id="profile-note"></p>
         </article>
       </section>
 
@@ -164,9 +167,9 @@
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th scope="col">Zeitraum</th><th scope="col">Tage</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Ist/Potenzial</th><th scope="col">Sonne</th></tr></thead>
+            <thead><tr><th scope="col">Zeitraum</th><th scope="col">Tage</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Ist/Potenzial</th><th scope="col">Sonne</th><th scope="col">Abregelung</th></tr></thead>
             <tbody id="summary-body">
-              <tr><td class="table-empty" colspan="6">Summen erscheinen nach dem ersten Datensatz.</td></tr>
+              <tr><td class="table-empty" colspan="7">Summen erscheinen nach dem ersten Datensatz.</td></tr>
             </tbody>
           </table>
         </div>
@@ -179,16 +182,16 @@
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Sonne</th><th scope="col">Ist/Potenzial</th></tr></thead>
+            <thead><tr><th scope="col">Datum</th><th scope="col">Ist-Ertrag</th><th scope="col">Potentieller Ertrag</th><th scope="col">Sonne</th><th scope="col">Ist/Potenzial</th><th scope="col">Abregelung</th></tr></thead>
             <tbody id="history-body">
-              <tr><td class="table-empty" colspan="5">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
+              <tr><td class="table-empty" colspan="6">Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
 
       <div class="page-notes">
-        <p>Das Potenzial ist ein Modellwert für ungestörten Betrieb: Abregelung (Einspeisebegrenzung, voller Akku) ist nicht enthalten, Verschattung nur, wenn sie in der Konfiguration aktiviert ist. Abweichungen zwischen Ist und Potenzial sind deshalb nicht automatisch Verschattung oder ein Defekt.</p>
+        <p>Das Potenzial ist ein Modellwert für ungestörten Betrieb: Abregelung (Einspeisebegrenzung, voller Akku) ist nicht enthalten, Verschattung nur, wenn sie in der Konfiguration aktiviert ist. Abweichungen zwischen Ist und Potenzial sind deshalb nicht automatisch Verschattung oder ein Defekt. Stunden mit „Abregelung wahrscheinlich“ sind eine Schätzung aus Akkustand und Netzeinspeisung; die angegebene Menge ist eine Obergrenze.</p>
         <p id="source-note"></p>
       </div>
 

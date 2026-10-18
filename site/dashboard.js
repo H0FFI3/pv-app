@@ -9,6 +9,8 @@ const MIN_POTENTIAL_FOR_HOUR_PROFILE = 0.05; // kWh je Stunde über alle Tage; d
 const GREEN = "#197459";
 const SUN = "#e5ad38";
 const ORANGE = "#dc7b52";
+const CURTAILED_BAND = "rgba(220, 123, 82, 0.2)";
+const CURTAILMENT_REASONS = { limit: "Einspeiselimit erreicht", battery: "Akku voll" };
 
 let records = Array.isArray(window.PV_DAILY_DATA?.records) ? window.PV_DAILY_DATA.records : [];
 let activeRange = 30;
@@ -31,6 +33,9 @@ const elements = {
   hourlySelect: document.querySelector("#hourly-date"),
   profileEmpty: document.querySelector("#profile-empty"),
   profileEmptyText: document.querySelector("#profile-empty-text"),
+  profileNote: document.querySelector("#profile-note"),
+  hourlyCurtailmentNote: document.querySelector("#hourly-curtailment-note"),
+  hourlyCurtailedLegend: document.querySelector("#hourly-curtailed-legend"),
   energyEmpty: document.querySelector("#energy-empty"),
   sunshineEmpty: document.querySelector("#sunshine-empty"),
   ratioEmpty: document.querySelector("#ratio-empty"),
@@ -220,6 +225,15 @@ function drawChart(canvas, data, valueKey, color, comparisonKey = null, options 
     context.fillText(formatNumber(value), left - 7, y);
   }
 
+  if (options.highlight) {
+    data.forEach((item, index) => {
+      const band = options.highlight(item);
+      if (!band) return;
+      context.fillStyle = band;
+      context.fillRect(left + slotWidth * index, top, slotWidth, plotHeight);
+    });
+  }
+
   data.forEach((item, index) => {
     const raw = item[valueKey];
     if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) return;
@@ -317,6 +331,31 @@ function appendEmptyRow(body, columns, text) {
   body.append(row);
 }
 
+function curtailmentText(curtailment) {
+  if (!curtailment) return "-";
+  if (!curtailment.hours) return "keine";
+  return `${curtailment.hours} h · ${formatNumber(curtailment.lost_kwh)} kWh`;
+}
+
+function combineCurtailment(items) {
+  const checked = items.filter((item) => item.curtailment);
+  if (!checked.length) return null;
+  return {
+    hours: checked.reduce((total, item) => total + item.curtailment.hours, 0),
+    lost_kwh: checked.reduce((total, item) => total + item.curtailment.lost_kwh, 0),
+  };
+}
+
+function hourlyTooltipExtra(item) {
+  const lines = [];
+  if (item.curtailed) lines.push(`Abregelung wahrscheinlich: ${CURTAILMENT_REASONS[item.curtailed] || "erkannt"}`);
+  const signals = [];
+  if (Number.isFinite(item.soc_pct)) signals.push(`Akku ${formatNumber(item.soc_pct)} %`);
+  if (Number.isFinite(item.feed_in_w)) signals.push(`Netz ${Math.round(item.feed_in_w)} W`);
+  if (signals.length) lines.push(signals.join(" · "));
+  return lines.join("\n");
+}
+
 function percentText(value) {
   return value === null ? "-" : `${formatNumber(value)} %`;
 }
@@ -325,7 +364,7 @@ function renderHistory(data) {
   elements.historyBody.replaceChildren();
   elements.historyCount.textContent = `${records.length} ${records.length === 1 ? "Tag" : "Tage"}`;
   if (!data.length) {
-    appendEmptyRow(elements.historyBody, 5, "Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.");
+    appendEmptyRow(elements.historyBody, 6, "Die Tageshistorie wird nach dem ersten Lauf hier angezeigt.");
     return;
   }
   data
@@ -339,6 +378,7 @@ function renderHistory(data) {
         `${formatNumber(item.potential_kwh)} kWh`,
         `${formatNumber(item.sunshine_hours)} h`,
         percentText(ratioPercent(item.actual_kwh, item.potential_kwh)),
+        curtailmentText(item.curtailment),
       ]),
     );
 }
@@ -359,7 +399,7 @@ function renderSummary() {
   elements.summaryBody.replaceChildren();
   const rows = summaryRows();
   if (!rows.length) {
-    appendEmptyRow(elements.summaryBody, 6, "Summen erscheinen nach dem ersten Datensatz.");
+    appendEmptyRow(elements.summaryBody, 7, "Summen erscheinen nach dem ersten Datensatz.");
     return;
   }
   rows.forEach(({ label, items }) => {
@@ -372,6 +412,7 @@ function renderSummary() {
       `${formatNumber(potential)} kWh`,
       percentText(ratioPercent(actual, potential)),
       `${formatNumber(sumOf(items, "sunshine_hours"))} h`,
+      curtailmentText(combineCurtailment(items)),
     ]);
   });
 }
@@ -415,30 +456,55 @@ function populateHourlySelect() {
   elements.hourlySelect.disabled = false;
 }
 
+function renderHourlyCurtailmentNote(day) {
+  const info = day.curtailment;
+  elements.hourlyCurtailedLegend.hidden = !(info && info.hours > 0);
+  if (!info) {
+    elements.hourlyCurtailmentNote.textContent = day.signals_checked
+      ? "AlphaESS liefert für diesen Tag keine Akku- oder Netzdaten; Abregelung kann nicht beurteilt werden."
+      : "Dieser Tag wurde vor der Abregelungserkennung erfasst. Beim nächsten Start werden die Akku- und Netzdaten nachgeladen.";
+  } else if (!info.hours) {
+    elements.hourlyCurtailmentNote.textContent = "Keine Abregelung erkannt.";
+  } else {
+    const label = info.hours === 1 ? "Stunde" : "Stunden";
+    elements.hourlyCurtailmentNote.textContent = `${info.hours} ${label} mit wahrscheinlicher Abregelung, bis zu ${formatNumber(info.lost_kwh)} kWh nicht erzeugt (Obergrenze, inklusive Modellabweichung).`;
+  }
+}
+
 function drawHourlyChart() {
   const availableDays = daysWithHourly();
   const selectedDay = availableDays.find((record) => record.date === elements.hourlySelect.value) || availableDays.at(-1);
   if (!selectedDay) {
     elements.hourlyCanvas.hidden = true;
     elements.hourlyEmpty.hidden = false;
+    elements.hourlyCurtailedLegend.hidden = true;
+    elements.hourlyCurtailmentNote.textContent = "";
     return;
   }
   elements.hourlyCanvas.hidden = false;
   elements.hourlyEmpty.hidden = true;
+  renderHourlyCurtailmentNote(selectedDay);
   drawChart(elements.hourlyCanvas, selectedDay.hourly, "actual_kwh", GREEN, "potential_kwh", {
     unit: "kWh",
     comparisonLabel: "Potentieller Ertrag",
     title: (item) => `${formatDate(selectedDay.date)} · ${item.hour}`,
     xLabel: (item) => item.hour.slice(0, 2),
+    highlight: (item) => (item.curtailed ? CURTAILED_BAND : null),
+    extraLine: hourlyTooltipExtra,
   });
 }
 
 function hourProfile() {
   const days = daysWithHourly().filter((record) => record.hourly.some((point) => point.actual_kwh !== null && point.actual_kwh !== undefined));
   const sums = new Map();
+  let excluded = 0;
   days.forEach((record) => {
     record.hourly.forEach((point) => {
       if (point.actual_kwh === null || point.actual_kwh === undefined) return;
+      if (point.curtailed) {
+        excluded += 1; // abgeregelte Stunden würden Verschattung vortäuschen
+        return;
+      }
       const entry = sums.get(point.hour) || { hour: point.hour, actual: 0, potential: 0, days: 0 };
       entry.actual += Number(point.actual_kwh);
       entry.potential += Number(point.potential_kwh);
@@ -450,11 +516,12 @@ function hourProfile() {
     .filter((entry) => entry.potential >= MIN_POTENTIAL_FOR_HOUR_PROFILE)
     .sort((a, b) => a.hour.localeCompare(b.hour))
     .map((entry) => ({ hour: entry.hour, ratio_pct: ratioPercent(entry.actual, entry.potential), days: entry.days }));
-  return { dayCount: days.length, data };
+  return { dayCount: days.length, data, excluded };
 }
 
 function drawProfileChart() {
-  const { dayCount, data } = hourProfile();
+  const { dayCount, data, excluded } = hourProfile();
+  elements.profileNote.textContent = excluded ? `${excluded} als abgeregelt erkannte Stundenwerte wurden aus dieser Auswertung ausgenommen.` : "";
   const enough = dayCount >= MIN_DAYS_FOR_HOUR_PROFILE && data.length > 0;
   elements.profileCanvas.hidden = !enough;
   elements.profileEmpty.hidden = enough;
@@ -530,8 +597,15 @@ function csvNumber(value) {
 
 function buildCsv() {
   const rows = [
-    ["date", "actual_kwh", "potential_kwh", "sunshine_hours"],
-    ...records.map((item) => [item.date, csvNumber(item.actual_kwh), csvNumber(item.potential_kwh), csvNumber(item.sunshine_hours)]),
+    ["date", "actual_kwh", "potential_kwh", "sunshine_hours", "curtailed_hours", "curtailed_kwh"],
+    ...records.map((item) => [
+      item.date,
+      csvNumber(item.actual_kwh),
+      csvNumber(item.potential_kwh),
+      csvNumber(item.sunshine_hours),
+      csvNumber(item.curtailment?.hours),
+      csvNumber(item.curtailment?.lost_kwh),
+    ]),
   ];
   return rows.map((row) => row.join(";")).join("\r\n");
 }

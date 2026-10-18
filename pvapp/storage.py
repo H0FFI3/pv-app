@@ -17,6 +17,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+HOURLY_SIGNAL_KEYS = ("soc_pct", "feed_in_w")
+
 
 def backup_path(path: Path) -> Path:
     return path.with_name(path.name + ".bak")
@@ -98,13 +100,20 @@ def normalize_record(record: dict, data_start: date | None = None) -> dict | Non
             potential = float(point["potential_kwh"])
             if not math.isfinite(potential) or (actual is not None and not math.isfinite(actual)):
                 continue
-            hourly_profile.append({"hour": str(point["hour"]), "actual_kwh": actual, "potential_kwh": potential})
+            entry = {"hour": str(point["hour"]), "actual_kwh": actual, "potential_kwh": potential}
+            for key in HOURLY_SIGNAL_KEYS:  # Akku-/Netzsignale für die Abregelungserkennung (optional)
+                value = point.get(key)
+                if value is not None and math.isfinite(float(value)):
+                    entry[key] = float(value)
+            hourly_profile.append(entry)
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
     if hourly_profile:
         normalized["hourly"] = hourly_profile
     if isinstance(record.get("weather_source"), str):
         normalized["weather_source"] = record["weather_source"]
+    if record.get("signals_checked") is True:
+        normalized["signals_checked"] = True
     return normalized
 
 
@@ -124,3 +133,38 @@ def upsert_record(raw_records: list, record: dict) -> list:
     kept = [item for item in raw_records if not (isinstance(item, dict) and item.get("date") == record["date"])]
     kept.append(record)
     return sorted(kept, key=lambda item: str(item.get("date", "")) if isinstance(item, dict) else "")
+
+
+def days_missing_signals(raw_records: list) -> set[date]:
+    """Gültige Tage mit Stundenprofil, für die Akku-/Netzsignale noch nie abgefragt wurden.
+
+    Gemeint sind Datensätze, die vor der Abregelungserkennung erfasst wurden: kein ``signals_checked``-Vermerk
+    und kein Signal in den Stunden. Tage, die einmal abgefragt wurden (auch ohne Ergebnis), tauchen nicht auf,
+    damit nicht bei jedem Start erneut abgerufen wird."""
+    missing = set()
+    for record in valid_records(raw_records):
+        hourly = record.get("hourly")
+        if not hourly or record.get("signals_checked"):
+            continue
+        if not any(point.get(key) is not None for point in hourly for key in HOURLY_SIGNAL_KEYS):
+            missing.add(date.fromisoformat(record["date"]))
+    return missing
+
+
+def apply_signals(raw_records: list, day: date, signals: dict[str, dict[str, float]]) -> list:
+    """Ergänzt den gespeicherten Tag um Signale je Stunde und setzt ``signals_checked``. Alle übrigen Werte
+    des Datensatzes (Ist, Potenzial, Sonne, Stundenwerte) bleiben unverändert."""
+    updated = []
+    for record in raw_records:
+        if isinstance(record, dict) and record.get("date") == day.isoformat():
+            record = {**record, "signals_checked": True}
+            if isinstance(record.get("hourly"), list):
+                points = []
+                for point in record["hourly"]:
+                    point = dict(point) if isinstance(point, dict) else point
+                    if isinstance(point, dict):
+                        point.update(signals.get(str(point.get("hour")), {}))
+                    points.append(point)
+                record["hourly"] = points
+        updated.append(record)
+    return updated

@@ -78,3 +78,29 @@ def test_load_environment_priority_and_empty_values(tmp_path):
     environ = {"C": "aus_umgebung"}
     load_environment([high, low], environ)
     assert environ == {"A": "von_low", "B": "von_high", "C": "aus_umgebung"}
+
+
+def test_curtailment_defaults_and_overrides(base_env, config):
+    c = config.curtailment
+    assert (c.enabled, c.soc_full_pct, c.min_deficit, c.feed_in_limit_w) == (True, 97.0, 0.2, None)
+    assert (config.alphaess_soc_field, config.alphaess_feed_in_field) == ("cbat", "feedIn")
+    base_env.update(FEED_IN_LIMIT_W="4200", BATTERY_FULL_SOC_PCT="95", CURTAILMENT_MIN_DEFICIT="0.1",
+                    ALPHAESS_SOC_FIELD="soc", CURTAILMENT_DETECTION="false")
+    custom = config_from_env(base_env)
+    assert custom.curtailment.feed_in_limit_w == 4200 and custom.curtailment.soc_full_pct == 95
+    assert custom.curtailment.enabled is False and custom.alphaess_soc_field == "soc"
+
+
+@pytest.mark.parametrize("name,value", [("BATTERY_FULL_SOC_PCT", "20"), ("CURTAILMENT_MIN_DEFICIT", "2"), ("FEED_IN_LIMIT_W", "-5")])
+def test_invalid_curtailment_values_are_rejected(base_env, name, value):
+    base_env[name] = value
+    with pytest.raises(ConfigError, match=name):
+        config_from_env(base_env)
+
+
+def test_curtailment_settings_can_be_read_without_a_complete_configuration():
+    from pvapp.config import curtailment_settings_from_env
+
+    assert curtailment_settings_from_env({"FEED_IN_LIMIT_W": "3000"}).feed_in_limit_w == 3000
+    with pytest.raises(ConfigError, match="BATTERY_FULL_SOC_PCT"):
+        curtailment_settings_from_env({"BATTERY_FULL_SOC_PCT": "x"})

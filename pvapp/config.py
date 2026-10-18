@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import dotenv_values
 
+from .curtailment import CurtailmentSettings
 from .paths import is_frozen, project_root
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ class Config:
     alphaess_app_id: str = field(default="", repr=False)
     alphaess_app_secret: str = field(default="", repr=False)
     alphaess_system_sn: str = field(default="", repr=False)
+    # Abregelungserkennung und Feldnamen der AlphaESS-Leistungsdaten
+    curtailment: CurtailmentSettings = field(default_factory=CurtailmentSettings)
+    alphaess_soc_field: str = "cbat"
+    alphaess_feed_in_field: str = "feedIn"
 
     @property
     def installed_kwp(self) -> float:
@@ -180,6 +185,27 @@ class _Reader:
         return self.raw(name) or default
 
 
+def _curtailment_from_reader(r: "_Reader") -> CurtailmentSettings:
+    limit = r.float("FEED_IN_LIMIT_W", default=0.0, minimum=0)
+    return CurtailmentSettings(
+        enabled=r.bool("CURTAILMENT_DETECTION", default=True),
+        soc_full_pct=r.float("BATTERY_FULL_SOC_PCT", default=97.0, minimum=50, maximum=100),
+        min_deficit=r.float("CURTAILMENT_MIN_DEFICIT", default=0.20, minimum=0, maximum=1),
+        min_potential_kwh=r.float("CURTAILMENT_MIN_POTENTIAL_KWH", default=0.3, minimum=0),
+        feed_in_limit_w=limit or None,
+        feed_in_tolerance=r.float("FEED_IN_LIMIT_TOLERANCE", default=0.95, minimum=0.5, maximum=1),
+    )
+
+
+def curtailment_settings_from_env(env: Mapping[str, str]) -> CurtailmentSettings:
+    """Nur die Abregelungs-Einstellungen (für die Anzeige gespeicherter Daten ohne vollständige Konfiguration)."""
+    r = _Reader(env)
+    settings = _curtailment_from_reader(r)
+    if r.invalid:
+        raise ConfigError("Ungültige Werte in .env: " + "; ".join(r.invalid))
+    return settings
+
+
 def config_from_env(env: Mapping[str, str]) -> Config:
     """Erzeugt und validiert eine Config aus einem Mapping (z. B. ``os.environ``)."""
     r = _Reader(env)
@@ -238,6 +264,7 @@ def config_from_env(env: Mapping[str, str]) -> Config:
     bifaciality_gain = r.float("BIFACIALITY_GAIN", default=0.0, minimum=0, maximum=0.5)
     module_bifacial = r.bool("MODULE_BIFACIAL")
     report_text = r.text("REPORT_PATH")
+    curtailment = _curtailment_from_reader(r)
 
     if r.missing or r.invalid:
         parts = []
@@ -279,6 +306,9 @@ def config_from_env(env: Mapping[str, str]) -> Config:
         alphaess_app_id=r.text("ALPHAESS_APP_ID"),
         alphaess_app_secret=r.text("ALPHAESS_APP_SECRET"),
         alphaess_system_sn=r.text("ALPHAESS_SYSTEM_SN"),
+        curtailment=curtailment,
+        alphaess_soc_field=r.text("ALPHAESS_SOC_FIELD", "cbat"),
+        alphaess_feed_in_field=r.text("ALPHAESS_FEED_IN_FIELD", "feedIn"),
     )
 
 

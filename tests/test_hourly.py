@@ -66,3 +66,47 @@ def test_all_zero_power_returns_zeros_without_division_error():
     hourly = aggregate_hourly_pv_power(samples_for_day(day, 10, 12, 0), day, 0.0, TZ)
     assert set(hourly.values()) == {0.0}
     assert isinstance(pd.Series(hourly).sum(), float)
+
+
+# --------------------------------------------------------------------------- Signale (Abregelung)
+
+
+def test_hourly_signals_take_max_soc_and_mean_absolute_feed_in():
+    from pvapp.sources import aggregate_hourly_signals
+
+    day = date(2026, 10, 14)
+    samples = [
+        {"uploadTime": "2026-10-14 11:00:00", "ppv": 500, "cbat": 95.0, "feedIn": 1000},
+        {"uploadTime": "2026-10-14 11:30:00", "ppv": 500, "cbat": 99.5, "feedIn": -3000},
+        {"uploadTime": "2026-10-14 12:00:00", "ppv": 500, "cbat": 100, "feedIn": 4000},
+        {"uploadTime": "2026-10-15 12:00:00", "ppv": 500, "cbat": 10, "feedIn": 1},  # anderer Tag
+    ]
+    signals = aggregate_hourly_signals(samples, day, TZ)
+    assert signals == {"11:00": {"soc_pct": 99.5, "feed_in_w": 2000.0}, "12:00": {"soc_pct": 100.0, "feed_in_w": 4000.0}}
+
+
+def test_missing_signal_fields_yield_no_keys():
+    from pvapp.sources import aggregate_hourly_signals
+
+    day = date(2026, 10, 14)
+    samples = samples_for_day(day, 10, 12, 500)  # nur ppv
+    assert aggregate_hourly_signals(samples, day, TZ) == {}
+    only_soc = [{**s, "cbat": 50} for s in samples]
+    result = aggregate_hourly_signals(only_soc, day, TZ)
+    assert set(result["10:00"]) == {"soc_pct"}
+
+
+def test_custom_field_names_are_supported():
+    from pvapp.sources import aggregate_hourly_signals
+
+    day = date(2026, 10, 14)
+    samples = [{"uploadTime": "2026-10-14 10:00:00", "ppv": 1, "soc": 88, "grid": 700}]
+    assert aggregate_hourly_signals(samples, day, TZ, "soc", "grid") == {"10:00": {"soc_pct": 88.0, "feed_in_w": 700.0}}
+
+
+def test_signals_survive_the_fall_back_day():
+    from pvapp.sources import aggregate_hourly_signals
+
+    day = date(2026, 10, 25)
+    samples = [{"uploadTime": f"2026-10-25 {h:02d}:{m:02d}:00", "ppv": 100, "cbat": 40} for h in range(24) for m in (0, 30)]
+    assert len(aggregate_hourly_signals(samples, day, TZ)) == 24

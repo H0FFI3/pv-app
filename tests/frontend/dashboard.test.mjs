@@ -13,12 +13,22 @@ function load(name, { width = 600, height = 250 } = {}) {
   const html = fs.readFileSync(path.join(dir, `${name}.html`), "utf8");
   const errors = [];
   const downloads = [];
+  const fills = [];
   const dom = new JSDOM(html, {
     runScripts: "dangerously",
     pretendToBeVisual: true,
     url: "file:///bericht.html",
     beforeParse(window) {
-      const context = new Proxy({}, { get: (target, key) => (key in target ? target[key] : () => {}), set: (target, key, value) => ((target[key] = value), true) });
+      const context = new Proxy(
+        {},
+        {
+          get: (target, key) => {
+            if (key === "fillRect") return (...args) => fills.push({ style: target.fillStyle, args });
+            return key in target ? target[key] : () => {};
+          },
+          set: (target, key, value) => ((target[key] = value), true),
+        },
+      );
       window.HTMLCanvasElement.prototype.getContext = () => context;
       window.HTMLCanvasElement.prototype.getBoundingClientRect = () => ({ width, height, left: 0, top: 0, right: width, bottom: height });
       window.URL.createObjectURL = (blob) => (downloads.push({ blob }), "blob:test");
@@ -29,7 +39,7 @@ function load(name, { width = 600, height = 250 } = {}) {
   });
   const { window } = dom;
   const $ = (selector) => window.document.querySelector(selector);
-  return { window, document: window.document, $, errors, downloads, data: window.PV_DAILY_DATA.records };
+  return { window, document: window.document, $, errors, downloads, fills, data: window.PV_DAILY_DATA.records };
 }
 
 const pointer = (window, canvas, x, y = 40) => canvas.dispatchEvent(new window.MouseEvent("pointermove", { clientX: x, clientY: y, bubbles: true }));
@@ -56,9 +66,10 @@ test("Tabellen, Summen, Verhältnis und Wetterquelle", () => {
   const page = load("many");
   assert.deepEqual(page.errors, []);
   assert.equal(page.$("#history-body").children.length, 14);
-  assert.equal(page.$("#history-body").children[0].children.length, 5);
+  assert.equal(page.$("#history-body").children[0].children.length, 6);
   const rows = [...page.$("#summary-body").children].map((row) => [...row.children].map((cell) => cell.textContent));
   assert.equal(rows.length, 3);
+  assert.equal(rows[0].length, 7);
   const all = page.data;
   assert.equal(rows[2][1], String(all.length));
   const actual = all.reduce((sum, item) => sum + item.actual_kwh, 0);
@@ -183,12 +194,119 @@ test("CSV-Export: Dezimalkomma, Semikolon, BOM", async () => {
   );
   assert.deepEqual([...bytes.slice(0, 3)], [0xef, 0xbb, 0xbf], "UTF-8-BOM für Excel");
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  assert.ok(text.startsWith("\ufeffdate;actual_kwh;potential_kwh;sunshine_hours\r\n"));
+  assert.ok(text.startsWith("\ufeffdate;actual_kwh;potential_kwh;sunshine_hours;curtailed_hours;curtailed_kwh\r\n"));
   const lines = text.split("\r\n");
   assert.equal(lines.length, page.data.length + 1);
   const first = lines[1].split(";");
-  assert.equal(first.length, 4);
+  assert.equal(first.length, 6);
   assert.match(first[0], /^\d{4}-\d{2}-\d{2}$/);
-  for (const value of first.slice(1)) assert.match(value, /^\d+(,\d+)?$/, `Dezimalkomma erwartet: ${value}`);
+  for (const value of first.slice(1, 4)) assert.match(value, /^\d+(,\d+)?$/, `Dezimalkomma erwartet: ${value}`);
+  const flagged = lines.slice(1).map((line) => line.split(";")).find((cells) => cells[4] && cells[4] !== "0");
+  assert.ok(flagged, "Tag mit abgeregelten Stunden im Export");
+  assert.match(flagged[4], /^\d+$/);
+  assert.match(flagged[5], /^\d+(,\d+)?$/);
   assert.ok(!/\d\.\d/.test(lines.slice(1).join("")), "kein Dezimalpunkt in den Zahlen");
+});
+
+
+// ------------------------------------------------------------------------ Abregelung
+
+const BAND = "rgba(220, 123, 82, 0.2)";
+
+function selectDay(page, date) {
+  const select = page.$("#hourly-date");
+  select.value = date;
+  select.dispatchEvent(new page.window.Event("change"));
+}
+
+test("Abgeregelte Stunden werden im Stundendiagramm hinterlegt, Tooltip nennt Grund und Signale", () => {
+  const page = load("many");
+  const day = page.data.filter((item) => item.curtailment?.hours > 0).at(-1);
+  assert.ok(day, "Fixture enthält einen abgeregelten Tag");
+  assert.equal(day.curtailment.hours, 4);
+  selectDay(page, day.date);
+
+  const chart = page.$("#hourly-chart").pvChart;
+  const flagged = Array.from(chart.data.filter((item) => item.curtailed).map((item) => item.hour)); // Array.from: jsdom-Realm -> Node-Realm
+  assert.deepEqual(flagged, ["11:00", "12:00", "13:00", "14:00"]);
+
+  page.fills.length = 0;
+  selectDay(page, day.date); // neu zeichnen, Aufrufe mitschneiden
+  const bands = page.fills.filter((fill) => fill.style === BAND);
+  assert.equal(bands.length, 4, "ein Band je abgeregelter Stunde");
+  const slot = (600 - 42 - 10) / chart.data.length;
+  assert.ok(Math.abs(bands[0].args[2] - slot) < 1e-9, "Band füllt genau einen Stundenslot");
+
+  const index = chart.data.findIndex((item) => item.hour === "12:00");
+  const canvas = page.$("#hourly-chart");
+  pointer(page.window, canvas, 42 + slot * (index + 0.5));
+  const text = page.$("#hourly-tooltip").textContent;
+  assert.match(text, /Abregelung wahrscheinlich: Einspeiselimit erreicht/);
+  assert.match(text, /Akku 100,0 %/);
+  assert.match(text, /Netz 4000 W/);
+
+  assert.equal(page.$("#hourly-curtailed-legend").hidden, false);
+  assert.match(page.$("#hourly-curtailment-note").textContent, /4 Stunden mit wahrscheinlicher Abregelung, bis zu \d+,\d kWh/);
+});
+
+test("Tage ohne Abregelung und Tage ohne Signale werden unterschiedlich beschrieben", () => {
+  const page = load("many");
+  const clean = page.data.filter((item) => item.curtailment && item.curtailment.hours === 0).at(-1);
+  selectDay(page, clean.date);
+  assert.match(page.$("#hourly-curtailment-note").textContent, /Keine Abregelung erkannt/);
+  assert.equal(page.$("#hourly-curtailed-legend").hidden, true);
+  const noSignal = page.data.find((item) => item.hourly && !item.curtailment);
+  assert.ok(noSignal, "Fixture enthält einen Tag mit Stundenprofil ohne Signale");
+  selectDay(page, noSignal.date);
+  assert.match(page.$("#hourly-curtailment-note").textContent, /vor der Abregelungserkennung erfasst.*nachgeladen/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("abgefragt, aber ohne Akku-/Netzdaten: eigener Hinweistext statt Nachlade-Versprechen", () => {
+  const page = load("no_signals");
+  const day = page.data.find((item) => item.hourly);
+  selectDay(page, day.date);
+  const text = page.$("#hourly-curtailment-note").textContent;
+  assert.match(text, /AlphaESS liefert für diesen Tag keine Akku- oder Netzdaten/);
+  assert.doesNotMatch(text, /nachgeladen/);
+});
+
+test("Tabellen: Abregelung je Tag und Summe; unbekannt (-) ist nicht dasselbe wie keine", () => {
+  const page = load("many");
+  const rows = [...page.$("#history-body").children].map((row) => [...row.children].map((cell) => cell.textContent));
+  const last = rows[0]; // jüngster Tag: heute-0, abgeregelt
+  assert.match(last[5], /^4 h · \d+,\d kWh$/);
+  assert.ok(rows.some((row) => row[5] === "keine"));
+  assert.ok(rows.some((row) => row[5] === "-"), "Tage ohne Stundenprofil: nicht beurteilbar");
+  const summary = [...page.$("#summary-body").children].map((row) => [...row.children].map((cell) => cell.textContent));
+  const totalHours = page.data.reduce((sum, item) => sum + (item.curtailment?.hours || 0), 0);
+  assert.match(summary[2][6], new RegExp(`^${totalHours} h · `));
+});
+
+test("Tageszeit-Auswertung nimmt abgeregelte Stunden aus (kein vorgetäuschter Schatten)", () => {
+  const page = load("many");
+  const profile = page.$("#profile-chart").pvChart;
+  const noon = profile.data.find((item) => item.hour === "12:00");
+  // erwartetes Verhältnis nur aus nicht abgeregelten Tagen
+  let actual = 0;
+  let potential = 0;
+  for (const item of page.data) {
+    for (const point of item.hourly || []) {
+      if (point.hour !== "12:00" || point.actual_kwh == null || point.curtailed) continue;
+      actual += point.actual_kwh;
+      potential += point.potential_kwh;
+    }
+  }
+  assert.ok(Math.abs(noon.ratio_pct - (actual / potential) * 100) < 1e-9);
+  assert.ok(noon.ratio_pct > 65, "abgeregelte 50-%-Stunden verfälschen den Mittelwert nicht");
+  assert.match(page.$("#profile-note").textContent, /^\d+ als abgeregelt erkannte Stundenwerte/);
+});
+
+test("ohne Signale: nichts markiert, Tabellen zeigen -, keine Fehler", () => {
+  const page = load("no_signals");
+  assert.deepEqual(page.errors, []);
+  assert.ok(page.data.every((item) => !item.curtailment));
+  const cells = [...page.$("#history-body").children].map((row) => row.children[5].textContent);
+  assert.ok(cells.every((text) => text === "-"));
+  assert.equal(page.$("#profile-note").textContent, "");
 });
