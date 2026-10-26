@@ -39,6 +39,8 @@ python pv_app.py --offline       # nur lokale Daten anzeigen, keine Abrufe
 python pv_app.py --refresh       # den Vortag auch dann neu abrufen, wenn er schon gespeichert ist
 python pv_app.py --refresh-days 5  # die letzten 5 Tage neu abrufen (1 bis 92)
 python pv_app.py --no-open       # Bericht erzeugen, aber nicht öffnen (z. B. Aufgabenplanung)
+python pv_app.py --no-report     # nur Daten aktualisieren, keine HTML-Datei schreiben
+python pv_app.py serve           # lokaler Server mit Einrichtungsseite (siehe unten)
 python pv_app.py --verbose       # ausführlichere Protokollierung
 ```
 
@@ -63,18 +65,104 @@ der Forecast-API (`past_days`, Modellanalyse) ergänzt. Pro Datensatz wird die Q
 (`weather_source`) und im Bericht-Footer angezeigt. `archive` bzw. `forecast` erzwingen eine Quelle.
 Ein Tag gilt nur als vollständig, wenn mindestens 22 Stundenwerte vorliegen.
 
-## EXE erstellen
+## Server-Modus mit Einrichtungsseite (`serve`)
+
+Für Nutzer ohne Erfahrung mit Textdateien: Der Server bringt eine **Einrichtungsseite im Browser** mit und
+aktualisiert die Daten täglich selbst.
+
+```powershell
+PV-Tagesbericht-Server.exe serve     # ohne Konsolenfenster (oder PV-Tagesbericht.exe serve bzw. python pv_app.py serve)
+PV-Tagesbericht-Server.exe serve --no-browser --port 8765
+```
+
+Der Browser öffnet `http://127.0.0.1:8765/`. Beim ersten Start landest du auf der **Einrichtung**:
+AlphaESS-Zugangsdaten (mit Knopf „Verbindung testen“, der die gefundene Anlage und einen Plausibilitätsvergleich
+der kWp anzeigt), Standort, Dach und Module (Wirkungsgrad, Verluste und Temperaturkoeffizient in Prozent wie im
+Datenblatt), Betrieb und optional Erweitert. Mit „Speichern und Daten abrufen“ startet die erste Aktualisierung.
+Die Einrichtung ist später jederzeit über „Einstellungen“ unten rechts im Bericht erreichbar.
+
+- **Tägliche Aktualisierung:** Der Server startet sie zur eingestellten Uhrzeit (`UPDATE_TIME`, Standard 06:00)
+  als eigenen Prozess (`--no-open --no-report`). War der Rechner zu dieser Zeit aus, wird beim nächsten Start
+  nachgeholt. Schlägt ein Lauf fehl, folgen bis zu 3 Versuche pro Tag im Abstand von 30 Minuten. Fehlende Tage
+  holt der Backfill ohnehin nach. `--no-schedule` schaltet den Zeitplan ab.
+- **Bericht und Status:** Der Bericht wird bei jedem Aufruf frisch aus den gespeicherten Daten gerendert.
+  Unten rechts zeigt eine Leiste den Stand, den nächsten Termin und den Knopf „Jetzt aktualisieren“; nach dem
+  Lauf lädt die Seite neu. Das Protokoll des letzten Laufs liegt in `logs\last-update.log`.
+- **Wo die Einstellungen liegen:** `%LOCALAPPDATA%\PV-Tagesbericht\settings.env` (gleiches Format wie `.env`,
+  niedrigste Priorität). Eine vorhandene `.env` oder Windows-Umgebungsvariablen haben Vorrang; die Einrichtungsseite
+  warnt, wenn eine `.env` ihre Werte überstimmt. Änderungen gelten ohne Neustart.
+- **Server beenden / Autostart:** Mit der Konsolen-EXE: Fenster geöffnet lassen, Beenden mit Strg+C. Mit der Fenster-EXE: Knopf „Beenden“ unten rechts im Bericht
+  oder Startmenü „PV-Tagesbericht beenden“. Für Autostart in der
+  Windows-Aufgabenplanung `PV-Tagesbericht-Server.exe serve --no-browser` „Bei Anmeldung“ starten (der Installer richtet das auf Wunsch ein). Ein zweiter Start
+  erkennt den laufenden Server und öffnet nur den Browser.
+- **Schlank:** Der Server lädt weder pandas noch pvlib (nur der Aktualisierungsprozess), startet also schnell und
+  braucht wenig Speicher.
+
+**Sicherheit**
+
+- Der Server lauscht standardmäßig nur auf `127.0.0.1`. Einrichtungsseite und alle `/api/*`-Aufrufe (außer
+  `/api/ping`) sind **immer nur für den eigenen Rechner** erreichbar, auch mit `--host 0.0.0.0`, das nur den
+  Bericht im Heimnetz freigibt (ohne Anmeldung, nur in vertrauenswürdigen Netzen).
+- Schutz gegen fremde Webseiten: der `Host`- und `Origin`-Header werden geprüft (DNS-Rebinding), schreibende
+  Aufrufe brauchen ein Token, das nur in den vom Server ausgelieferten Seiten steht. Strenge
+  Content-Security-Policy, kein Einbetten in Frames.
+- Das AlphaESS-Secret wird nie an den Browser zurückgegeben (Feld bleibt leer, „(gespeichert)“; leer lassen
+  behält den Wert) und in Logs maskiert. Es liegt im Klartext in `settings.env`; die Datei wird, soweit das
+  Betriebssystem es zulässt, nur für den eigenen Benutzer lesbar angelegt. Gib sie nicht weiter.
+- Gerät ohne Bildschirm (z. B. Raspberry Pi): Die Einrichtung ist nur lokal erreichbar. Per SSH-Tunnel
+  (`ssh -L 8765:127.0.0.1:8765 benutzer@pi`) öffnest du sie vom eigenen Rechner aus unter
+  `http://localhost:8765/setup`. Dieser Weg und der Betrieb auf einem Pi sind nicht getestet.
+
+**Weitergabe an andere**
+
+- Jeder Nutzer braucht **eigene** AlphaESS-OpenAPI-Zugangsdaten und trägt sie nur auf seinem Rechner ein.
+- Die Wetterdaten stammen von [Open-Meteo.com](https://open-meteo.com/) (kostenlos für **nicht-kommerzielle**
+  Nutzung, derzeit unter 10.000 Abrufen pro Tag; CC BY 4.0). Die geforderte Namensnennung steht mit Link im
+  Fuß des Berichts und darf nicht entfernt werden. Bei kommerzieller Nutzung ist ein Vertrag mit Open-Meteo nötig.
+  Prüfe die Bedingungen von Open-Meteo und AlphaESS selbst, bevor du die App weitergibst.
+
+## EXE und Windows-Installer erstellen
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-.\build_exe.ps1            # Ordner-Variante: dist\PV-Tagesbericht\PV-Tagesbericht.exe (schneller Start)
-.\build_exe.ps1 -OneFile   # einzelne EXE: dist\PV-Tagesbericht.exe (entpackt bei jedem Start)
+.\build_exe.ps1          # Programmordner: dist\PV-Tagesbericht\ (zwei Programme, siehe unten)
+.\build_installer.ps1    # baut zuerst den Ordner und dann den Installer: dist\installer\PV-Tagesbericht-Setup-<Version>.exe
 ```
 
+`build_exe.ps1` nutzt `PV-Tagesbericht.spec` und erzeugt in **einem** Ordner zwei Programme, die sich alle
+Bibliotheken teilen:
+
+| Programm | Zweck |
+|---|---|
+| `PV-Tagesbericht.exe` | mit Konsolenfenster: Aktualisieren und Bericht öffnen, Fehlersuche (`--offline`, `--refresh` …) |
+| `PV-Tagesbericht-Server.exe` | **ohne** Konsolenfenster: der `serve`-Modus für Startmenü und Autostart |
+
 Beim Start sucht die EXE eine `.env` neben sich, danach im Ordner darüber und zwei Ebenen darüber
-(so findet auch `dist\PV-Tagesbericht\` die `.env` im Projektordner). `dashboard.html` wird neben
-der EXE erzeugt; ist der Ordner nicht beschreibbar (z. B. `Program Files`), weicht die App nach
-`%LOCALAPPDATA%\PV-Tagesbericht` aus. `REPORT_PATH` überschreibt beides.
+(so findet auch `dist\PV-Tagesbericht\` die `.env` im Projektordner). `dashboard.html` (nur im Betrieb ohne
+`serve`) wird neben der EXE erzeugt; ist der Ordner nicht beschreibbar (z. B. `Program Files`), weicht die App
+nach `%LOCALAPPDATA%\PV-Tagesbericht` aus. `REPORT_PATH` überschreibt beides.
+
+### Installer (Inno Setup)
+
+Voraussetzung ist [Inno Setup](https://jrsoftware.org/isdl.php) **6.3 oder neuer** (das Skript liegt in
+`installer\PV-Tagesbericht.iss`, UTF-8 mit BOM). Der Installer
+
+- installiert **pro Benutzer, ohne Administratorrechte**, nach `%LOCALAPPDATA%\Programs\PV-Tagesbericht`;
+- legt Startmenü-Einträge „PV-Tagesbericht“ (öffnet Bericht und Einstellungen) und „PV-Tagesbericht beenden“ an,
+  optional eine Desktop-Verknüpfung;
+- richtet auf Wunsch den **Autostart** ein (`serve --no-browser` beim Anmelden, standardmäßig angehakt), damit die
+  Daten täglich aktualisiert werden;
+- startet am Ende die Einrichtung im Browser (kein Terminal, keine `.env` nötig);
+- beendet beim Update und Deinstallieren einen laufenden Server und ersetzt die Dateien sauber;
+- **löscht Daten nie ungefragt**: Beim Deinstallieren wird gefragt, ob Tageshistorie und Einstellungen
+  (inklusive AlphaESS-Zugangsdaten) mitgelöscht werden sollen, Standard ist „Nein“. Updates lassen sie unberührt.
+
+Hinweise für die Weitergabe: Ohne Code-Signaturzertifikat zeigt Windows SmartScreen beim ersten Start eine
+Warnung („Weitere Informationen“ → „Trotzdem ausführen“), und einzelne Virenscanner melden
+PyInstaller-Programme gelegentlich fälschlich. Beides lässt sich nur mit Signatur bzw. durch Melden des Fehlalarms
+beim Hersteller des Scanners beheben. Der Installer wurde auf Linux nicht kompiliert; geprüft sind das
+PyInstaller-Paket (Server und Aktualisierung laufen daraus) und die Konsistenz von Spec, Skripten und Installer
+durch Tests.
 
 ## Lokale Daten und Sicherheit der Historie
 
@@ -84,6 +172,9 @@ der EXE erzeugt; ist der Ordner nicht beschreibbar (z. B. `Program Files`), weic
 | `daily.json.bak` | Stand vor dem letzten Schreiben |
 | `daily.json.corrupt-<zeit>` | defekte Datei, zur Analyse erhalten |
 | `logs\pv-tagesbericht.log` | Protokoll (rotierend, ohne Zugangsdaten) |
+| `logs\last-update.log` | Protokoll des letzten Aktualisierungslaufs (Serve-Modus) |
+| `settings.env` | Einstellungen der Einrichtungsseite (enthält das AlphaESS-Secret) |
+| `status.json` | Zustand der Aktualisierungen (Serve-Modus) |
 | `horizon.json` | Cache des PVGIS-Horizontprofils |
 
 - Die Datei wird **atomar** geschrieben (temporäre Datei, dann ersetzen) und nur, wenn sich etwas
@@ -194,5 +285,5 @@ sie automatisch mit `python -m pytest` oder einzeln mit `npm test` (Umgebungsvar
 
 Aufbau: `pv_app.py` (Einstieg) → `pvapp/` mit `config.py` (Konfiguration), `sources.py` (AlphaESS,
 Open-Meteo, PVGIS), `model.py` (reines PV-Modell), `storage.py` (Historie), `report.py` (HTML),
-`curtailment.py` (Abregelungserkennung), `app.py` (Ablauf und CLI), `interactive.py`, `logging_setup.py`, `paths.py`. `tools/alphaess_probe.py` und
+`curtailment.py` (Abregelungserkennung), `app.py` (Ablauf und CLI), `server.py`, `pages.py`, `settings.py`, `updater.py`, `alphaess_client.py`, `display.py` (Serve-Modus, leichtgewichtig), `interactive.py`, `logging_setup.py`, `paths.py`. `tools/alphaess_probe.py` und
 `tools/alphaess_fields.py` sind Diagnosewerkzeuge für die AlphaESS-API.

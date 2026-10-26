@@ -6,17 +6,18 @@ import argparse
 import asyncio
 import copy
 import logging
-import os
 import sys
 import webbrowser
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
 
-from . import curtailment, model, paths, sources, storage
-from .config import Config, ConfigError, curtailment_settings_from_env, load_config
+from . import model, paths, sources, storage
+from .config import Config, ConfigError, load_config
+from .display import build_display_records
 from .interactive import chooser_for_terminal, is_interactive, prompt_credentials
 from .logging_setup import REDACTOR, setup_logging
 from .report import create_standalone_report, resolve_report_path
@@ -176,6 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--refresh", action="store_true", help="Den Vortag auch dann neu abrufen, wenn er schon gespeichert ist.")
     parser.add_argument("--refresh-days", type=int, metavar="N", help="Die letzten N Tage neu abrufen (1 bis 92), auch wenn sie schon gespeichert sind.")
     parser.add_argument("--no-open", action="store_true", help="Bericht erzeugen, aber nicht im Browser öffnen (z. B. für Aufgabenplanung).")
+    parser.add_argument("--no-report", action="store_true", help="Keine HTML-Datei schreiben (der Server liefert den Bericht selbst aus).")
+    parser.add_argument("--log-file", type=Path, metavar="DATEI", help="Meldungen zusätzlich in diese Datei schreiben (vom Server genutzt).")
     parser.add_argument("--verbose", action="store_true", help="Ausführliche Protokollierung.")
     return parser
 
@@ -187,15 +190,6 @@ def _try_config() -> tuple[Config | None, str | None]:
         return None, str(error)
     REDACTOR.add(*config.secrets)
     return config, None
-
-
-def _fallback_curtailment() -> curtailment.CurtailmentSettings:
-    """Ohne vollständige Konfiguration (z. B. --offline): Einstellungen aus der Umgebung, sonst Standardwerte."""
-    try:
-        return curtailment_settings_from_env(os.environ)
-    except ConfigError as error:
-        log.warning("%s Es gelten die Standardwerte der Abregelungserkennung.", error)
-        return curtailment.CurtailmentSettings()
 
 
 def update_history(payload: dict, config: Config, options: argparse.Namespace) -> bool:
@@ -309,16 +303,17 @@ def run(options: argparse.Namespace) -> int:
     if payload != original:
         storage.save_payload(payload, data_path)
 
-    display = storage.valid_records(payload["records"], config.data_start_date if config else None)
-    display = curtailment.annotate_records(display, config.curtailment if config else _fallback_curtailment())
+    display = build_display_records(payload["records"], config)
     flagged = sum(r.get("curtailment", {}).get("hours", 0) for r in display)
     if flagged:
         log.info("Abregelung: %d Stunde(n) in der Historie als wahrscheinlich abgeregelt markiert.", flagged)
+    log.info("Lokale Daten: %s", data_path)
+    if options.no_report:
+        return exit_code
     log.info("Erzeuge eigenständigen HTML-Bericht ...")
     report_path = resolve_report_path(config.report_path if config else None, paths.app_directory(), paths.app_data_directory())
     create_standalone_report(display, paths.resource_root(), report_path)
     log.info("HTML-Bericht erstellt: %s", report_path)
-    log.info("Lokale Daten: %s", data_path)
     if not options.no_open:
         log.info("Öffne Bericht im Standardbrowser ...")
         if not webbrowser.open(report_path.resolve().as_uri()):
@@ -328,7 +323,7 @@ def run(options: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     options = build_parser().parse_args(argv)
-    setup_logging(paths.log_directory(), verbose=options.verbose)
+    setup_logging(paths.log_directory(), verbose=options.verbose, extra_log_file=options.log_file)
     exit_code = 1
     try:
         exit_code = run(options)

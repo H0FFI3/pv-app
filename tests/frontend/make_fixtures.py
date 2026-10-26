@@ -7,8 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pvapp.curtailment import CurtailmentSettings, annotate_records  # noqa: E402
+from pvapp.pages import server_bar, setup_page  # noqa: E402
 from pvapp.paths import project_root  # noqa: E402
-from pvapp.report import create_standalone_report  # noqa: E402
+from pvapp.report import create_standalone_report, render_report  # noqa: E402
+from pvapp.settings import current_values  # noqa: E402
 
 
 def hourly(shift, missing_actual=False, curtail=False, signals=True):
@@ -63,6 +65,11 @@ def main(target: Path) -> None:
     settings = CurtailmentSettings(feed_in_limit_w=4000)
     for name, data in scenarios.items():
         create_standalone_report(annotate_records(data, settings), project_root(), target / f"{name}.html")
+
+    status = {"running": False, "ok": True, "text": "Zuletzt aktualisiert: 18.10.2026 06:02"}
+    bar = server_bar("TOKEN123", status, "Nächste Aktualisierung: 19.10. um 06:00")
+    (target / "served.html").write_text(render_report(annotate_records(records(5, 2), settings), project_root(), bar), encoding="utf-8")
+    (target / "setup.html").write_text(setup_page("TOKEN123", current_values({}), has_secret=True), encoding="utf-8")
 
 
 if __name__ == "__main__":

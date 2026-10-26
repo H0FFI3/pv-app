@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -81,10 +82,19 @@ def fetch_json(
         except SourceError:
             raise
         except requests.RequestException as error:
-            last_error = error
+            last_error = SourceError(_describe_network_error(error, url))
         if attempt + 1 < attempts:
             sleep(backoff_seconds * (attempt + 1))
     raise SourceError(f"Abruf fehlgeschlagen nach {attempts} Versuchen: {last_error}")
+
+
+def _describe_network_error(error: Exception, url: str) -> str:
+    host = urlsplit(url).hostname or url
+    if isinstance(error, requests.Timeout):
+        return f"Zeitüberschreitung bei {host}"
+    if isinstance(error, requests.ConnectionError):
+        return f"keine Verbindung zu {host} (Internet prüfen)"
+    return f"{type(error).__name__} bei {host}"
 
 
 def _weather_from_payload(payload: dict, timezone: str) -> tuple[pd.DataFrame, pd.Series, float]:
@@ -405,9 +415,9 @@ def choose_system(
 
 
 def _default_client_factory(app_id: str, app_secret: str):
-    from alphaess.alphaess import alphaess  # lazy: Paket wird nur für echte Abrufe benötigt
+    from .alphaess_client import create_client
 
-    return alphaess(app_id, app_secret, raise_on_error=True)
+    return create_client(app_id, app_secret)
 
 
 async def fetch_actuals(

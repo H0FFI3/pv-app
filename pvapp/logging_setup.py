@@ -31,16 +31,27 @@ class SecretRedactor(logging.Filter):
 REDACTOR = SecretRedactor()
 
 
-def setup_logging(log_directory: Path | None, *, verbose: bool = False) -> None:
+def setup_logging(log_directory: Path | None, *, verbose: bool = False, extra_log_file: Path | None = None) -> None:
     root = logging.getLogger("pvapp")
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     root.handlers.clear()
     root.propagate = False
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter("%(message)s"))
-    console.addFilter(REDACTOR)
-    root.addHandler(console)
+    if getattr(sys.stdout, "write", None) is not None:  # Fenster-EXE ohne Konsole: sys.stdout ist None
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter("%(message)s"))
+        console.addFilter(REDACTOR)
+        root.addHandler(console)
+
+    if extra_log_file is not None:  # nur Meldungen, wie in der Konsole (der Server zeigt daraus die Statuszeile)
+        try:
+            extra_log_file.parent.mkdir(parents=True, exist_ok=True)
+            extra = logging.FileHandler(extra_log_file, mode="w", encoding="utf-8")
+            extra.setFormatter(logging.Formatter("%(message)s"))
+            extra.addFilter(REDACTOR)
+            root.addHandler(extra)
+        except OSError as error:
+            root.warning("Zusätzliche Logdatei nicht verfügbar (%s).", error)
 
     if log_directory is not None:
         try:

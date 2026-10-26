@@ -467,3 +467,52 @@ def test_refresh_days_option_and_validation(sandbox):
     assert sandbox.calls == [[D(2026, 10, 14), D(2026, 10, 15)]]
     assert start("--no-open", "--refresh-days", "500") == 1  # ungültig: Fehlermeldung, Bericht trotzdem erzeugt
     assert sandbox.report.exists()
+
+
+def test_no_report_option_updates_the_history_but_writes_no_html(sandbox):
+    """Der Server-Modus liefert den Bericht selbst aus; die Aktualisierung schreibt dann keine Datei."""
+    assert start("--no-open", "--no-report") == 0
+    assert saved_dates(sandbox) == ["2026-10-13", "2026-10-14", "2026-10-15"]
+    assert not sandbox.report.exists()
+
+
+@pytest.fixture
+def restore_logging():
+    import logging
+
+    logger = logging.getLogger("pvapp")
+    handlers, propagate, level = list(logger.handlers), logger.propagate, logger.level
+    yield
+    for handler in list(logger.handlers):
+        handler.close()
+    logger.handlers[:] = handlers
+    logger.propagate, logger.level = propagate, level
+
+
+def test_log_file_option_writes_a_clean_copy_of_the_messages(sandbox, tmp_path, restore_logging):
+    target = tmp_path / "logs" / "last-update.log"
+    assert app.main(["--offline", "--no-open", "--no-report", "--log-file", str(target)]) == 0
+    text = target.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "PV-Tagesbericht wird gestartet." and "INFO" not in text  # nur Meldungen, kein Zeitstempel
+    assert not sandbox.report.exists()
+
+
+def test_logging_works_without_a_console_window():
+    """Fenster-EXE: sys.stdout ist None. Die App darf dabei weder abstürzen noch Meldungen verlieren."""
+    import subprocess, sys, tempfile, pathlib
+
+    with tempfile.TemporaryDirectory() as folder:
+        log_file = pathlib.Path(folder) / "x.log"
+        code = (
+            "import sys; sys.stdout = None; sys.stderr = None; import logging; from pvapp.logging_setup import setup_logging;"
+            f"setup_logging(None, extra_log_file=__import__('pathlib').Path(r'{log_file}')); logging.getLogger('pvapp.x').info('läuft ohne Konsole')"
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(pathlib.Path(__file__).resolve().parent.parent))
+        assert result.returncode == 0, result.stderr
+        assert "läuft ohne Konsole" in log_file.read_text(encoding="utf-8")
+
+
+def test_show_message_is_a_noop_outside_windows_or_with_a_console():
+    from pvapp.interactive import show_message
+
+    show_message("Titel", "Text")  # darf nichts auslösen und nicht abstürzen

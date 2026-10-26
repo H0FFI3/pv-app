@@ -13,3 +13,6 @@ pv-tagesbericht.csv
 node_modules/
 .pytest_cache/
 package-lock.json
+
+# Das PyInstaller-Spec der App wird versioniert
+!PV-Tagesbericht.spec

@@ -72,6 +72,21 @@ def test_fetch_json_gives_up_after_network_errors():
         sources.fetch_json("u", {}, http_get=get, sleep=NO_SLEEP)
 
 
+def test_network_errors_are_short_and_name_the_host():
+    def offline(*args, **kwargs):
+        raise requests.ConnectionError("HTTPSConnectionPool(host='api.open-meteo.com', port=443): Max retries exceeded ... NameResolutionError ...")
+
+    with pytest.raises(SourceError) as error:
+        sources.fetch_json("https://api.open-meteo.com/v1/forecast", {}, http_get=offline, sleep=NO_SLEEP)
+    assert "keine Verbindung zu api.open-meteo.com" in str(error.value) and "NameResolutionError" not in str(error.value)
+
+    def slow(*args, **kwargs):
+        raise requests.Timeout("read timed out")
+
+    with pytest.raises(SourceError, match="Zeitüberschreitung bei example.org"):
+        sources.fetch_json("https://example.org/x", {}, http_get=slow, sleep=NO_SLEEP)
+
+
 # -------------------------------------------------------------------------------- Wetter
 
 

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 from typing import Mapping, MutableMapping
 from zoneinfo import ZoneInfo
@@ -18,13 +19,28 @@ from zoneinfo import ZoneInfo
 from dotenv import dotenv_values
 
 from .curtailment import CurtailmentSettings
-from .paths import is_frozen, project_root
+from .paths import is_frozen, project_root, settings_path
 
 log = logging.getLogger(__name__)
 
 
 class ConfigError(RuntimeError):
-    """Konfiguration fehlt oder ist ungültig (Meldung ist für Endnutzer gedacht)."""
+    """Konfiguration fehlt oder ist ungültig (Meldung ist für Endnutzer gedacht).
+
+    ``fields``: Namen der betroffenen Einstellungen (z. B. für die Hervorhebung in der Einrichtungsseite)."""
+
+    def __init__(self, message: str, fields=()):
+        super().__init__(message)
+        self.fields = frozenset(fields)
+
+
+def _field_names(missing, invalid) -> set[str]:
+    names = set(missing)
+    for item in invalid:
+        match = re.match(r"[A-Z][A-Z0-9_]*", item)
+        if match:
+            names.add(match.group(0))
+    return names
 
 
 # Physikalisch nötige Angaben. MODULE_MODEL, MODULE_BIFACIAL und alle Modell-Optionen
@@ -74,6 +90,7 @@ class Config:
     data_start_date: date
     api_request_interval_seconds: int = 10
     backfill_max_days: int = 14
+    update_time: time = time(6, 0)  # tägliche Aktualisierung im Serve-Modus (lokale Uhrzeit der Anlage)
     weather_source: str = "auto"
     # Modelloptionen (Standard = unverändertes Verhalten der Vorversion)
     iam_enabled: bool = False
@@ -104,7 +121,7 @@ class Config:
 
 
 def env_file_candidates() -> list[Path]:
-    """Höchste Priorität zuerst. Bei der EXE: neben der EXE, dann Ordner darüber
+    """Höchste Priorität zuerst; ``settings.env`` (Einrichtungsseite) steht ganz hinten. Bei der EXE: neben der EXE, dann Ordner darüber
     (onefile: Projektordner), dann zwei Ebenen darüber (onedir: dist/PV-Tagesbericht/ -> Projektordner)."""
     if is_frozen():
         executable_directory = Path(sys.executable).resolve().parent
@@ -112,23 +129,37 @@ def env_file_candidates() -> list[Path]:
             executable_directory / ".env",
             executable_directory.parent / ".env",
             executable_directory.parent.parent / ".env",
+            settings_path(),
         ]
-    return [project_root() / ".env"]
+    return [project_root() / ".env", settings_path()]
+
+
+def merged_file_values(candidates: list[Path] | None = None) -> dict[str, str]:
+    """Werte aller .env-Dateien (höchste Priorität gewinnt). Leere Werte werden ignoriert, damit sie
+    keinen gefüllten Wert einer anderen Datei verdecken."""
+    merged: dict[str, str] = {}
+    for path in reversed(candidates if candidates is not None else env_file_candidates()):
+        for key, value in dotenv_values(path).items():
+            if value is not None and value.strip() != "":
+                merged[key] = value
+    return merged
+
+
+def effective_env(base: Mapping[str, str] | None = None, candidates: list[Path] | None = None) -> dict[str, str]:
+    """Wirksame Einstellungen als neues Dict, ohne ``os.environ`` zu verändern: .env-Dateien, überstimmt
+    von ``base`` (Standard: echte Umgebungsvariablen). Für langlebige Prozesse (Server), die Änderungen
+    an settings.env ohne Neustart übernehmen müssen."""
+    base = os.environ if base is None else base
+    return {**merged_file_values(candidates), **dict(base)}
 
 
 def load_environment(
     candidates: list[Path] | None = None,
     environ: MutableMapping[str, str] | None = None,
 ) -> None:
-    """Liest .env-Dateien. Vorhandene Umgebungsvariablen haben Vorrang, leere Werte
-    in der .env werden ignoriert (damit sie keinen gefüllten Wert einer anderen .env verdecken)."""
+    """Liest .env-Dateien in ``environ`` (Standard ``os.environ``). Vorhandene Umgebungsvariablen haben Vorrang."""
     environ = os.environ if environ is None else environ
-    merged: dict[str, str] = {}
-    for path in reversed(candidates if candidates is not None else env_file_candidates()):
-        for key, value in dotenv_values(path).items():
-            if value is not None and value.strip() != "":
-                merged[key] = value
-    for key, value in merged.items():
+    for key, value in merged_file_values(candidates).items():
         environ.setdefault(key, value)
 
 
@@ -202,7 +233,7 @@ def curtailment_settings_from_env(env: Mapping[str, str]) -> CurtailmentSettings
     r = _Reader(env)
     settings = _curtailment_from_reader(r)
     if r.invalid:
-        raise ConfigError("Ungültige Werte in .env: " + "; ".join(r.invalid))
+        raise ConfigError("Ungültige Werte in .env: " + "; ".join(r.invalid), _field_names([], r.invalid))
     return settings
 
 
@@ -257,6 +288,15 @@ def config_from_env(env: Mapping[str, str]) -> Config:
         r.invalid.append(f"WEATHER_SOURCE='{weather_source}' (erlaubt: {', '.join(WEATHER_SOURCES)})")
         weather_source = "auto"
 
+    update_time = time(6, 0)
+    update_text = r.raw("UPDATE_TIME")
+    if update_text:
+        try:
+            hours, minutes = update_text.split(":")
+            update_time = time(int(hours), int(minutes))
+        except ValueError:
+            r.invalid.append(f"UPDATE_TIME='{update_text}' (Format HH:MM erwartet, z. B. 06:00)")
+
     iam_enabled = r.bool("IAM_ENABLED")
     iam_b = r.float("IAM_B", default=0.05, minimum=0, maximum=1)
     albedo = r.float("ALBEDO", default=0.25, minimum=0, maximum=1)
@@ -272,7 +312,7 @@ def config_from_env(env: Mapping[str, str]) -> Config:
             parts.append("Bitte folgende PV-Einstellungen in .env ergänzen: " + ", ".join(r.missing))
         if r.invalid:
             parts.append("Ungültige Werte in .env: " + "; ".join(r.invalid))
-        raise ConfigError(". ".join(parts))
+        raise ConfigError(". ".join(parts), _field_names(r.missing, r.invalid))
     for warning in r.warnings:
         log.warning(warning)
 
@@ -296,6 +336,7 @@ def config_from_env(env: Mapping[str, str]) -> Config:
         data_start_date=data_start,
         api_request_interval_seconds=interval,
         backfill_max_days=backfill,
+        update_time=update_time,
         weather_source=weather_source,
         iam_enabled=iam_enabled,
         iam_b=iam_b,

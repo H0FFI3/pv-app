@@ -21,7 +21,7 @@ def embed_json(records: list[dict]) -> str:
     return data.replace("<", "\\u003c")
 
 
-def build_report_html(records: list[dict], template: str, styles: str, script: str) -> str:
+def build_report_html(records: list[dict], template: str, styles: str, script: str, extra_html: str = "") -> str:
     """Stylesheet und Skript werden eingebettet. Das Skript steht vor </body>: Inline-Skripte ignorieren
     ``defer`` und würden im <head> ausgeführt, bevor die Seitenelemente existieren."""
     html, style_count = STYLE_TAG.subn(lambda _: f"<style>\n{styles}\n</style>", template, count=1)
@@ -32,19 +32,24 @@ def build_report_html(records: list[dict], template: str, styles: str, script: s
         raise ReportTemplateError('Vorlage: <script data-inline="script"> nicht gefunden.')
     if html.count("</body>") != 1:
         raise ReportTemplateError("Vorlage: genau ein </body> erwartet.")
-    block = f"<script>window.PV_DAILY_DATA = {embed_json(records)};</script>\n<script>\n{script}\n</script>\n"
+    block = f"<script>window.PV_DAILY_DATA = {embed_json(records)};</script>\n<script>\n{script}\n</script>\n{extra_html}\n"
     # Lambda verhindert, dass Backslashes im Inhalt als Regex-Ersetzung interpretiert werden.
     return re.sub(r"</body>", lambda _: block + "</body>", html, count=1)
 
 
-def create_standalone_report(records: list[dict], resource_root: Path, report_path: Path) -> Path:
+def render_report(records: list[dict], resource_root: Path, extra_html: str = "") -> str:
     site = resource_root / "site"
-    html = build_report_html(
+    return build_report_html(
         records,
         (site / "index.html").read_text(encoding="utf-8"),
         (site / "styles.css").read_text(encoding="utf-8"),
         (site / "dashboard.js").read_text(encoding="utf-8"),
+        extra_html,
     )
+
+
+def create_standalone_report(records: list[dict], resource_root: Path, report_path: Path) -> Path:
+    html = render_report(records, resource_root)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(html, encoding="utf-8")
     return report_path

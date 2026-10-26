@@ -163,3 +163,4 @@ td:first-child { font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+.page-footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

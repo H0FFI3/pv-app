@@ -41,3 +41,15 @@ def choose_system_interactively(systems: list[dict]) -> dict:
 def chooser_for_terminal():
     """Auswahlfunktion nur bei interaktivem Start, sonst ``None`` (dann gilt ALPHAESS_SYSTEM_SN)."""
     return choose_system_interactively if is_interactive() else None
+
+
+def show_message(title: str, text: str) -> None:
+    """Meldungsfenster, nur unter Windows und nur ohne Konsole (Fenster-EXE); sonst ohne Wirkung."""
+    if sys.platform != "win32" or getattr(sys.stdout, "write", None) is not None:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass

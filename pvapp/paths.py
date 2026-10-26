@@ -41,3 +41,12 @@ def log_directory() -> Path:
 
 def horizon_cache_path() -> Path:
     return app_data_directory() / "horizon.json"
+
+
+def settings_path() -> Path:
+    """Von der Einrichtungsseite geschriebene Einstellungen (niedrigste Priorität unter den .env-Dateien)."""
+    return app_data_directory() / "settings.env"
+
+
+def status_path() -> Path:
+    return app_data_directory() / "status.json"

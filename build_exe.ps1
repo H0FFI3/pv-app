@@ -1,40 +1,20 @@
-# Baut PV-Tagesbericht.exe mit PyInstaller.
-#   .\build_exe.ps1            -> Ordner-Variante (schneller Start): dist\PV-Tagesbericht\PV-Tagesbericht.exe
-#   .\build_exe.ps1 -OneFile   -> einzelne EXE: dist\PV-Tagesbericht.exe (entpackt bei jedem Start, startet langsamer)
-param(
-    [switch]$OneFile
-)
-
+# Baut den Programmordner mit PyInstaller (zwei Programme, siehe PV-Tagesbericht.spec):
+#   dist\PV-Tagesbericht\PV-Tagesbericht.exe          (Konsolenfenster)
+#   dist\PV-Tagesbericht\PV-Tagesbericht-Server.exe   (ohne Konsolenfenster, für "serve")
+# Den Installer erzeugt anschließend .\build_installer.ps1.
 $ErrorActionPreference = "Stop"
-
-$mode = if ($OneFile) { "--onefile" } else { "--onedir" }
-
-$arguments = @(
-    "--clean",
-    "--noconfirm",
-    $mode,
-    "--console",
-    "--name",
-    "PV-Tagesbericht",
-    "--add-data",
-    "site;site",
-    "--collect-all",
-    "pvlib",
-    "--collect-all",
-    "alphaess",
-    "--collect-data",
-    "tzdata"
-)
 
 $python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     $python = (Get-Command python).Source
 }
 
-& $python -m PyInstaller @arguments (Join-Path $PSScriptRoot "pv_app.py")
-
-if ($OneFile) {
-    Write-Host "Fertig: dist\PV-Tagesbericht.exe"
-} else {
-    Write-Host "Fertig: dist\PV-Tagesbericht\PV-Tagesbericht.exe"
+Push-Location $PSScriptRoot
+try {
+    & $python -m PyInstaller --clean --noconfirm (Join-Path $PSScriptRoot "PV-Tagesbericht.spec")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller ist fehlgeschlagen (Code $LASTEXITCODE)." }
+} finally {
+    Pop-Location
 }
+
+Write-Host "Fertig: dist\PV-Tagesbericht\PV-Tagesbericht.exe und PV-Tagesbericht-Server.exe"

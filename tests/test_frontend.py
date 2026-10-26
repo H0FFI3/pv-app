@@ -16,10 +16,11 @@ FRONTEND = Path(__file__).resolve().parent / "frontend"
 def test_dashboard_in_jsdom(tmp_path):
     subprocess.run([sys.executable, str(FRONTEND / "make_fixtures.py"), str(tmp_path)], check=True)
     result = subprocess.run(
-        ["node", "--test", "dashboard.test.mjs"],
+        ["node", "--test"],
         cwd=FRONTEND,
         env={**os.environ, "PV_FIXTURE_DIR": str(tmp_path)},
         capture_output=True,
         text=True,
+        timeout=180,
     )
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-2000:]
